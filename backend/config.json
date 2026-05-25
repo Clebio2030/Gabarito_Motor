@@ -1,0 +1,8 @@
+{
+  "whatsappId": null,
+  "msdelay": 1000,
+  "queueId": null,
+  "closeTicket": true,
+  "noRegister": false,
+  "historicoEnvios": []
+}

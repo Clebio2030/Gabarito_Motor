@@ -1,0 +1,30 @@
+﻿{
+  "githubOwner": "Clebio2030",
+  "githubRepo": "Gabarito_Motor",
+  "githubToken": "",
+  "releaseAssetNameContains": "",
+  "serviceName": "Gabarito",
+  "healthUrl": "http://127.0.0.1:3001/health",
+  "backupDir": "c:/Administracao/Gabarito/updater/backups",
+  "tempDir": "c:/Administracao/Gabarito/updater/temp",
+  "managedPaths": [
+    "backend",
+    "frontend",
+    "sql",
+    "Abrir_Web.bat",
+    "criar_views_gabarito.bat",
+    "instalador.bat",
+    "instalar_servico.bat",
+    "deletar_servico.bat"
+  ],
+  "preservePaths": [
+    "backend/.env",
+    "backend/config.json",
+    "backend/sync_state.json",
+    "backend/logs",
+    "backend/node_modules",
+    "updater",
+    ".git"
+  ],
+  "checkIntervalHours": 24
+}
