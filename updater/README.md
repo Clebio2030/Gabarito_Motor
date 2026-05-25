@@ -96,7 +96,7 @@ Essa tarefa é instalada automaticamente pelo instalador completo ou pelo instal
 Isso instala:
 - Serviço do Windows: `Gabarito`
 - Tarefa diária: `GabaritoUpdater`
-- Horário do atualizador: `03:00`
+- Horário do atualizador: `19:00`
 - Conta da tarefa: `SYSTEM`
 
 ### Rodar o atualizador manualmente agora
@@ -112,4 +112,5 @@ deletar_servico.bat
 ## Resumo prático
 - **Gabarito**: roda como serviço do Windows
 - **Updater**: é instalado pelo `instalador.bat`/`instalar_servico.bat` e roda como tarefa agendada 1x por dia
+
 

@@ -17,7 +17,7 @@ set SCRIPT_BACKEND=src\server.js
 
 rem Script do atualizador
 set SCRIPT_UPDATER=C:\Administracao\Gabarito\updater\updater.js
-set HORA_ATUALIZADOR=03:00
+set HORA_ATUALIZADOR=19:00
 
 rem Caminho do NSSM (versao 64 bits)
 set CAMINHO_NSSM=C:\Administracao\Gabarito\nssm\win64\nssm.exe
@@ -48,3 +48,4 @@ echo Verifique em Servicos do Windows e no Agendador de Tarefas.
 echo.
 pause
 endlocal
+
