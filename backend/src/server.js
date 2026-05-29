@@ -29,9 +29,6 @@ app.use(cors());
 app.use(morgan('dev'));
 app.use(express.json());
 
-// Servir o frontend estático (resolve o problema de CORS com file:///)
-const frontendPath = path.join(__dirname, '..', '..', 'frontend', 'build');
-app.use(express.static(frontendPath));
 
 // ──────────────────────────────────────
 // Helpers Firebird
@@ -160,12 +157,6 @@ app.post('/config', (req, res) => {
 
 
 // ──────────────────────────────────────
-// Fallback: SPA (React) — qualquer rota
-// não-API cai no index.html
-// ──────────────────────────────────────
-app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(frontendPath, 'index.html'));
-});
 
 // ──────────────────────────────────────
 // Iniciar servidor
