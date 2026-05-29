@@ -91,6 +91,9 @@ rem Confirmacao antes de executar
 echo  ATENCAO: Este script vai criar ou recriar as views:
 echo    - GABARITO_EMPRESAS
 echo    - GABARITO_FATURAMENTO_MENSAL
+echo    - GABARITO_CTAPAGAR_GERAL
+echo    - GABARITO_CTARCEBER_GERAL
+echo    - GABARITO_CURVA_ABC
 echo.
 set /p "CONFIRMA=  Deseja continuar? [S/N]: "
 if /i not "%CONFIRMA%"=="S" goto :FIM_CANCELADO

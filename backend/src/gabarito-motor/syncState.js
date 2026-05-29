@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { logInfo, logError } = require('../logger');
+const { logError } = require('../logger');
 
 const STATE_FILE_PATH = path.join(__dirname, '..', '..', 'sync_state.json');
 
@@ -39,8 +39,18 @@ function saveState(state) {
  * @returns {string}
  */
 function generateHash(data) {
-  const str = JSON.stringify(data);
-  return crypto.createHash('md5').update(str).digest('hex');
+  const hash = crypto.createHash('md5');
+  function feed(v) {
+    if (Array.isArray(v)) {
+      for (const item of v) hash.update(JSON.stringify(item));
+    } else if (v && typeof v === 'object') {
+      for (const [k, val] of Object.entries(v)) { hash.update(k); feed(val); }
+    } else {
+      hash.update(String(v ?? ''));
+    }
+  }
+  feed(data);
+  return hash.digest('hex');
 }
 
 /**

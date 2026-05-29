@@ -227,6 +227,86 @@ async function extrairContasReceber(idEmpresa) {
   });
 }
 
+// Passo 6: Extrair Curva ABC
+
+/**
+ * Busca a curva ABC de produtos de um IDEMPRESA.
+ * Filtra pelos últimos 3 anos para otimização de performance.
+ *
+ * @param {number} idEmpresa
+ * @returns {Promise<Array>}
+ */
+async function extrairCurvaAbc(idEmpresa) {
+  let rows = [];
+  try {
+    rows = await query(
+      `SELECT * FROM GABARITO_CURVA_ABC WHERE IDEMPRESA = ? AND DTSAIDA >= DATEADD(-3 YEAR TO CURRENT_DATE) ORDER BY DTSAIDA`,
+      [idEmpresa]
+    );
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar GABARITO_CURVA_ABC (IDEMPRESA=${idEmpresa}):`, err);
+  }
+
+  return (rows || []).map((row) => {
+    const str = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
+      return String(v).trim();
+    };
+    const num = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
+      return toNumber(v);
+    };
+    const dt = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
+      return v instanceof Date ? v.toISOString() : (v || null);
+    };
+
+    return {
+      cdProduto:         num('CDPRODUTO'),
+      produto:           str('PRODUTO'),
+      unidade:           str('UNIDADE'),
+      idEmpresa:         num('IDEMPRESA'),
+      nrPedido:          num('NRPEDIDO'),
+      idPreco:           num('IDPRECO'),
+      cdDeposito:        num('CDDEPOSITO'),
+      vlUnit:            num('VLUNIT'),
+      vlCusto:           num('VLCUSTO'),
+      qtdProduto:        num('QTDPRODUTO'),
+      qtdeAtual:         num('QTDEATUAL'),
+      qtdeMinima:        num('QTDEMINIMA'),
+      descProd:          num('DESCPROD'),
+      descPed:           num('DESCPED'),
+      total:             num('TOTAL'),
+      subTotal:          num('SUBTOTAL'),
+      tpEntrega:         num('TPENTREGA'),
+      inativo:           str('INATIVO'),
+      promocao:          str('PROMOCAO'),
+      tabPromocao:       str('TABPROMOCAO'),
+      codCentral:        str('COD_CENTRAL'),
+      cdFabricante:      num('CDFABRICANTE'),
+      cdFornecedor:      num('CDFORNECEDOR'),
+      cdGrupo:           num('CDGRUPO'),
+      grupo:             str('GRUPO'),
+      cdTipo:            num('CDTIPO'),
+      tipo:              str('TIPO'),
+      cdLinha:           num('CDLINHA'),
+      linha:             str('LINHA'),
+      cdFamilia:         num('CDFAMILIA'),
+      familia:           str('FAMILIA'),
+      cdCliente:         num('CDCLIENTE'),
+      cdVendedor:        num('CDVENDEDOR'),
+      dtSaida:           dt('DTSAIDA'),
+      status:            num('STATUS'),
+      vlComDescComPromo: num('VLCOMDESCCOMPROMO'),
+      vlSemDescComPromo: num('VLSEMDESCCOMPROMO'),
+      vlComDescSemPromo: num('VLCOMDESCSEMPROMO'),
+      vlSemDescSemPromo: num('VLSEMDESCSEMPROMO'),
+      fatorConv:         num('FATORCONV'),
+      vlCustoCompra:     num('VLCUSTO_COMPRA')
+    };
+  });
+}
+
 // Helpers
 
 /** Remove tudo que nao e digito para comparacao neutra de CNPJ. */
@@ -244,5 +324,6 @@ module.exports = {
   mapearCnpjsParaIdEmpresa,
   extrairFaturamentoMensal,
   extrairContasPagar,
-  extrairContasReceber
+  extrairContasReceber,
+  extrairCurvaAbc
 };
