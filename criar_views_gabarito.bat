@@ -139,11 +139,6 @@ goto :EOF
 :FIM_OK
 echo  +----------------------------------------------------------+
 echo  ^|  [OK] Views criadas com sucesso!                        ^|
-echo  ^|                                                         ^|
-echo  ^|  Proximos passos:                                       ^|
-echo  ^|   1. Abra backend\.env e preencha GABARITO_TOKEN        ^|
-echo  ^|   2. Execute instalar_servico.bat                       ^|
-echo  ^|   3. Acesse http://localhost:3001 para confirmar        ^|
 echo  +----------------------------------------------------------+
 echo.
 pause

@@ -9,9 +9,7 @@
   "tempDir": "c:/Administracao/Gabarito/updater/temp",
   "managedPaths": [
     "backend",
-    "frontend",
     "sql",
-    "Abrir_Web.bat",
     "criar_views_gabarito.bat",
     "instalador.bat",
     "instalar_servico.bat",
