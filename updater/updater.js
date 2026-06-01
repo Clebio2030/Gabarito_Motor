@@ -28,7 +28,7 @@ function warn(message) {
 }
 
 function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  return JSON.parse(fs.readFileSync(filePath, 'utf8').replace(/^﻿/, ''));
 }
 
 function writeJson(filePath, data) {
