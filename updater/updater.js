@@ -8,13 +8,23 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const UPDATER_DIR = __dirname;
 const CONFIG_PATH = path.join(UPDATER_DIR, 'updater-config.json');
 const VERSION_PATH = path.join(UPDATER_DIR, 'version.json');
+const LOG_PATH = path.join(UPDATER_DIR, 'updater.log');
+
+function writeLog(line) {
+  const entry = `${new Date().toISOString()} ${line}\n`;
+  fs.appendFileSync(LOG_PATH, entry, 'utf8');
+}
 
 function log(message) {
-  console.log(`[Updater] ${message}`);
+  const line = `[Updater] ${message}`;
+  console.log(line);
+  writeLog(line);
 }
 
 function warn(message) {
-  console.warn(`[Updater][WARN] ${message}`);
+  const line = `[Updater][WARN] ${message}`;
+  console.warn(line);
+  writeLog(line);
 }
 
 function readJson(filePath) {
@@ -587,6 +597,8 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`[Updater][ERRO] ${error.message}`);
+  const line = `[Updater][ERRO] ${error.message}`;
+  console.error(line);
+  writeLog(line);
   process.exit(1);
 });

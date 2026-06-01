@@ -247,6 +247,36 @@ async function extrairCurvaAbc(idEmpresa) {
     logError(`[Gabarito] Erro ao consultar GABARITO_CURVA_ABC (IDEMPRESA=${idEmpresa}):`, err);
   }
 
+  // Agrega codigos de fornecedor por produto (PRODUTO_CODFORN pode ter N linhas por produto)
+  const mapaCodforn = {};
+  try {
+    const codfornRows = await query(`SELECT CDPRODUTO, CDFORN_PROD FROM PRODUTO_CODFORN`, []);
+    for (const r of (codfornRows || [])) {
+      const cd = r.CDPRODUTO ?? r.cdproduto;
+      const cod = String(r.CDFORN_PROD ?? r.cdforn_prod ?? '').trim();
+      if (!cd || !cod) continue;
+      if (mapaCodforn[cd]) mapaCodforn[cd].push(cod);
+      else mapaCodforn[cd] = [cod];
+    }
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar PRODUTO_CODFORN:`, err);
+  }
+
+  // Agrega codigos de barra por produto (PRODUTO_CODBARRA pode ter N linhas por produto)
+  const mapaCodbarra = {};
+  try {
+    const codbarraRows = await query(`SELECT CDPRODUTO, CODBARRA FROM PRODUTO_CODBARRA`, []);
+    for (const r of (codbarraRows || [])) {
+      const cd = r.CDPRODUTO ?? r.cdproduto;
+      const cod = String(r.CODBARRA ?? r.codbarra ?? '').trim();
+      if (!cd || !cod) continue;
+      if (mapaCodbarra[cd]) mapaCodbarra[cd].push(cod);
+      else mapaCodbarra[cd] = [cod];
+    }
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar PRODUTO_CODBARRA:`, err);
+  }
+
   return (rows || []).map((row) => {
     const str = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
@@ -261,14 +291,17 @@ async function extrairCurvaAbc(idEmpresa) {
       return v instanceof Date ? v.toISOString() : (v || null);
     };
 
+    const cdProduto = num('CDPRODUTO');
+
     return {
-      cdProduto:         num('CDPRODUTO'),
+      cdProduto,
       produto:           str('PRODUTO'),
       unidade:           str('UNIDADE'),
       idEmpresa:         num('IDEMPRESA'),
       nrPedido:          num('NRPEDIDO'),
       idPreco:           num('IDPRECO'),
       cdDeposito:        num('CDDEPOSITO'),
+      deposito:          str('DEPOSITO'),
       vlUnit:            num('VLUNIT'),
       vlCusto:           num('VLCUSTO'),
       qtdProduto:        num('QTDPRODUTO'),
@@ -284,6 +317,7 @@ async function extrairCurvaAbc(idEmpresa) {
       tabPromocao:       str('TABPROMOCAO'),
       codCentral:        str('COD_CENTRAL'),
       cdFabricante:      num('CDFABRICANTE'),
+      fabricante:        str('FABRICANTE'),
       cdFornecedor:      num('CDFORNECEDOR'),
       cdGrupo:           num('CDGRUPO'),
       grupo:             str('GRUPO'),
@@ -302,7 +336,12 @@ async function extrairCurvaAbc(idEmpresa) {
       vlComDescSemPromo: num('VLCOMDESCSEMPROMO'),
       vlSemDescSemPromo: num('VLSEMDESCSEMPROMO'),
       fatorConv:         num('FATORCONV'),
-      vlCustoCompra:     num('VLCUSTO_COMPRA')
+      vlCustoCompra:     num('VLCUSTO_COMPRA'),
+      codFornProd:       (mapaCodforn[cdProduto] || []).join(', '),
+      codBarra:          (mapaCodbarra[cdProduto] || []).join(', '),
+      frete:             num('FRETE'),
+      ipi:               num('IPI'),
+      icms:              num('ICMS')
     };
   });
 }
