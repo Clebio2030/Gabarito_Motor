@@ -34,7 +34,13 @@ net start %NOME_SERVICO%
 echo.
 echo Instalando tarefa agendada %NOME_TAREFA%...
 if exist "%SCRIPT_UPDATER%" (
-    schtasks /create /f /sc daily /st %HORA_ATUALIZADOR% /tn "%NOME_TAREFA%" /tr "\"%CAMINHO_NODE%\" \"%SCRIPT_UPDATER%\"" /ru SYSTEM
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "$action   = New-ScheduledTaskAction -Execute '\"%CAMINHO_NODE%\"' -Argument '\"%SCRIPT_UPDATER%\"';" ^
+        "$trigger  = New-ScheduledTaskTrigger -Daily -At '%HORA_ATUALIZADOR%';" ^
+        "$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;" ^
+        "$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest;" ^
+        "Register-ScheduledTask -TaskName '%NOME_TAREFA%' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null;" ^
+        "Write-Host 'Tarefa agendada criada com sucesso.'"
 ) else (
     echo [AVISO] Arquivo do updater nao encontrado:
     echo         %SCRIPT_UPDATER%
