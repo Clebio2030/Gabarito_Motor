@@ -30,6 +30,11 @@ function executarConsulta(sql, params = []) {
   });
 }
 
+function getDBOptions() {
+  return options;
+}
+
 module.exports = {
-  executarConsulta
+  executarConsulta,
+  getDBOptions
 };
