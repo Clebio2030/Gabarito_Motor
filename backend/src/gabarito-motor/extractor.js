@@ -277,6 +277,21 @@ async function extrairCurvaAbc(idEmpresa) {
     logError(`[Gabarito] Erro ao consultar PRODUTO_CODBARRA:`, err);
   }
 
+  // Busca percentual de substituicao tributaria por produto (PRODUTOPRECO)
+  const mapaPercUbstTrib = {};
+  try {
+    const percRows = await query(`SELECT CDPRODUTO, PERCSUBSTTRIB FROM PRODUTOPRECO`, []);
+    for (const r of (percRows || [])) {
+      const cd = r.CDPRODUTO ?? r.cdproduto;
+      if (cd == null) continue;
+      if (mapaPercUbstTrib[cd] === undefined) {
+        mapaPercUbstTrib[cd] = Number(r.PERCSUBSTTRIB ?? r.percsubsttrib ?? 0) || 0;
+      }
+    }
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar PRODUTOPRECO:`, err);
+  }
+
   return (rows || []).map((row) => {
     const str = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
@@ -341,7 +356,8 @@ async function extrairCurvaAbc(idEmpresa) {
       codBarra:          (mapaCodbarra[cdProduto] || []).join(', '),
       frete:             num('FRETE'),
       ipi:               num('IPI'),
-      icms:              num('ICMS')
+      icms:              num('ICMS'),
+      percUbstTrib:      mapaPercUbstTrib[cdProduto] ?? 0
     };
   });
 }
