@@ -19,21 +19,42 @@ function getOptions() {
   };
 }
 
+const QUERY_TIMEOUT_MS = parseInt(process.env.FB_QUERY_TIMEOUT || '90000', 10);
+
 /**
  * Executa uma query SQL parametrizada no Firebird e resolve com o array de linhas.
+ * Rejeita automaticamente após FB_QUERY_TIMEOUT ms (padrão: 90 s) para evitar
+ * que queries travadas bloqueiem o ciclo indefinidamente.
  * @param {string} sql
  * @param {Array}  params
  * @returns {Promise<Array>}
  */
 function query(sql, params = []) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Firebird query timeout (${QUERY_TIMEOUT_MS}ms): ${sql.substring(0, 120)}`));
+      }
+    }, QUERY_TIMEOUT_MS);
+
     firebird.attach(getOptions(), (err, db) => {
-      if (err) return reject(err);
+      if (err) {
+        clearTimeout(timer);
+        if (!settled) { settled = true; reject(err); }
+        return;
+      }
 
       db.query(sql, params, (errQ, rows) => {
+        clearTimeout(timer);
         db.detach();
-        if (errQ) return reject(errQ);
-        resolve(rows || []);
+        if (!settled) {
+          settled = true;
+          if (errQ) return reject(errQ);
+          resolve(rows || []);
+        }
       });
     });
   });
