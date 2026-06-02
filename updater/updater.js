@@ -481,7 +481,7 @@ function restoreBackup(backupDir, projectRoot, managedPaths) {
     const targetPath = path.join(projectRoot, rel);
 
     if (fs.existsSync(backupPath)) {
-      removePath(targetPath);
+      // Copia sem pré-deletar para evitar EPERM em diretórios com arquivos bloqueados
       copyPath(backupPath, targetPath);
     }
   }
@@ -533,6 +533,7 @@ async function main() {
 
   let serviceStopped = false;
   let backupDone = false;
+  let filesModified = false;
 
   try {
     const source = chooseDownloadSource(release, config);
@@ -551,6 +552,7 @@ async function main() {
 
     log('Atualizando arquivos do projeto...');
     syncManagedPaths(packageRoot, ROOT_DIR, config.managedPaths, config.preservePaths);
+    filesModified = true;
 
     runViewsSql(ROOT_DIR);
 
@@ -571,7 +573,7 @@ async function main() {
   } catch (error) {
     warn(`Erro durante atualização: ${error.message}`);
 
-    if (backupDone) {
+    if (backupDone && filesModified) {
       try {
         restoreBackup(backupDir, ROOT_DIR, config.managedPaths);
       } catch (rollbackError) {
