@@ -18,7 +18,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.e
 const cron = require('node-cron');
 const { logInfo, logWarn, logError } = require('../logger');
 const { buscarCnpjsAtivos, enviarSync } = require('./sender');
-const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc } = require('./extractor');
+const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairEntradas } = require('./extractor');
 const { checkStateChanged, updateState } = require('./syncState');
 
 // Funcao principal
@@ -59,12 +59,13 @@ async function runMotor() {
 
     // Passo 3: Extrair faturamento e contas
     for (const [cnpj, idEmpresa] of Object.entries(mapaCnpjId)) {
-      const faturamentoMensal = await extrairFaturamentoMensal(idEmpresa, anoCorrente);
-      const contasPagarTotal  = await extrairContasPagar(idEmpresa);
+      const faturamentoMensal  = await extrairFaturamentoMensal(idEmpresa, anoCorrente);
+      const contasPagarTotal   = await extrairContasPagar(idEmpresa);
       const contasReceberTotal = await extrairContasReceber(idEmpresa);
       const curvaAbcTotal      = await extrairCurvaAbc(idEmpresa);
+      const entradasTotal      = await extrairEntradas(idEmpresa);
 
-      const temDados = faturamentoMensal.length > 0 || contasPagarTotal.length > 0 || contasReceberTotal.length > 0 || curvaAbcTotal.length > 0;
+      const temDados = faturamentoMensal.length > 0 || contasPagarTotal.length > 0 || contasReceberTotal.length > 0 || curvaAbcTotal.length > 0 || entradasTotal.length > 0;
 
       if (!temDados) {
         logWarn(`[Gabarito] CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) sem dados em ${anoCorrente}.`);
@@ -73,14 +74,14 @@ async function runMotor() {
         await enviarSync({
           dataReferencia,
           sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
-          registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [] }]
+          registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [], entradas: [] }]
         });
         processados++;
         continue;
       }
 
       // Verificar se houve mudança nos dados
-      const dadosCompletos = { faturamentoMensal, contasPagar: contasPagarTotal, contasReceber: contasReceberTotal, curvaAbc: curvaAbcTotal };
+      const dadosCompletos = { faturamentoMensal, contasPagar: contasPagarTotal, contasReceber: contasReceberTotal, curvaAbc: curvaAbcTotal, entradas: entradasTotal };
       const { changed, hash } = checkStateChanged(cnpj, dadosCompletos);
 
       if (!changed) {
@@ -89,24 +90,27 @@ async function runMotor() {
         continue;
       }
 
-      logInfo(`[Gabarito] CNPJ ${cnpj}: faturamento=${faturamentoMensal.length}, ctaPagar=${contasPagarTotal.length}, ctaReceber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}`);
+      logInfo(`[Gabarito] CNPJ ${cnpj}: faturamento=${faturamentoMensal.length}, ctaPagar=${contasPagarTotal.length}, ctaReceber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}`);
 
       // Fatiar (chunk) os arrays grandes para nao derrubar a API (Erro 502)
       const CHUNK_SIZE = 5000;
-      const totalPagar = contasPagarTotal.length;
-      const totalReceber = contasReceberTotal.length;
+      const totalPagar    = contasPagarTotal.length;
+      const totalReceber  = contasReceberTotal.length;
       const totalCurvaAbc = curvaAbcTotal.length;
+      const totalEntradas = entradasTotal.length;
       const maxChunks = Math.max(
         1,
         Math.ceil(totalPagar / CHUNK_SIZE),
         Math.ceil(totalReceber / CHUNK_SIZE),
-        Math.ceil(totalCurvaAbc / CHUNK_SIZE)
+        Math.ceil(totalCurvaAbc / CHUNK_SIZE),
+        Math.ceil(totalEntradas / CHUNK_SIZE)
       );
 
       for (let i = 0; i < maxChunks; i++) {
         const cpChunk = contasPagarTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
         const crChunk = contasReceberTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
         const caChunk = curvaAbcTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const enChunk = entradasTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
         // Envia o faturamento apenas no primeiro chunk para não duplicar
         const fmChunk = (i === 0) ? faturamentoMensal : [];
 
@@ -117,6 +121,7 @@ async function runMotor() {
         if (cpChunk.length > 0)  registro.contasPagar       = cpChunk;
         if (crChunk.length > 0)  registro.contasReceber     = crChunk;
         if (caChunk.length > 0)  registro.curvaAbc          = caChunk;
+        if (enChunk.length > 0)  registro.entradas          = enChunk;
 
         const payload = {
           dataReferencia,

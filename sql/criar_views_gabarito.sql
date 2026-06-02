@@ -360,6 +360,64 @@ LEFT JOIN DEPOSITO DEP ON (SP.CDDEPOSITO = DEP.CDDEPOSITO)
 JOIN V_CURVA_AUXILIAR AUX ON (SE.IDEMPRESA = AUX.IDEMPRESA) AND (SE.NRPEDIDO = AUX.NRPEDIDO)
 ;
 
+/* GABARITO_ENTRADAS
+   Itens de entrada de estoque com custo inicial (VLUNIT de ENTRPRODUTO).
+
+   Colunas:
+   - NOTAFISCAL    : numero da nota fiscal
+   - DTNOTAFISCAL  : data da nota fiscal (DTNTFISCAL em ENTRESTOQUE)
+   - DTENTRADA     : data de entrada
+   - CDPRODUTO     : codigo do produto
+   - DESCRICAO     : descricao do produto
+   - QTDE          : quantidade do item
+   - VLCUSTO       : valor unitario de custo (VLUNIT da ENTRPRODUTO)
+   - IDEMPRESA     : empresa no ERP
+   - IDENTRADA     : identificador da entrada
+   - EMPRESA       : nome da empresa (CONFIGURACAO)
+   - TOTAL         : total do item (QTDE * VLUNIT)
+   - FORNECEDOR    : nome do fornecedor
+   - CDFORNECEDOR  : codigo do fornecedor
+
+   Filtro: B.STATUS = 1 (entradas confirmadas).
+   ------------------------------------------------------------------ */
+
+CREATE OR ALTER VIEW GABARITO_ENTRADAS (
+    NOTAFISCAL,
+    DTNOTAFISCAL,
+    DTENTRADA,
+    CDPRODUTO,
+    DESCRICAO,
+    QTDE,
+    VLCUSTO,
+    IDEMPRESA,
+    IDENTRADA,
+    EMPRESA,
+    TOTAL,
+    FORNECEDOR,
+    CDFORNECEDOR
+) AS
+SELECT
+    B.NOTAFISCAL,
+    B.DTNTFISCAL                     AS DTNOTAFISCAL,
+    B.DTENTRADA,
+    A.CDPRODUTO,
+    A.DESCRICAO,
+    A.QTDE,
+    A.VLUNIT                         AS VLCUSTO,
+    B.IDEMPRESA,
+    B.IDENTRADA,
+    C.NOMEEMPRESA                    AS EMPRESA,
+    (A.QTDE * A.VLUNIT)              AS TOTAL,
+    D.FORNECEDOR,
+    A.CDFORNECEDOR
+FROM ENTRPRODUTO A
+    JOIN ENTRESTOQUE  B ON (A.IDENTRADA    = B.IDENTRADA)
+                       AND (A.IDEMPRESA    = B.IDEMPRESA)
+    JOIN CONFIGURACAO C ON (B.IDEMPRESA    = C.IDEMPRESA)
+    JOIN FORNECEDOR   D ON (A.CDFORNECEDOR = D.CDFORNECEDOR)
+WHERE B.STATUS = 1;
+
+
 /* Confirmacao */
-SELECT 'Views criadas: GABARITO_EMPRESAS, GABARITO_FATURAMENTO_MENSAL, GABARITO_CTAPAGAR_GERAL, GABARITO_CTARCEBER_GERAL, GABARITO_CURVA_ABC' AS RESULTADO
+SELECT 'Views criadas: GABARITO_EMPRESAS, GABARITO_FATURAMENTO_MENSAL, GABARITO_CTAPAGAR_GERAL, GABARITO_CTARCEBER_GERAL, GABARITO_CURVA_ABC, GABARITO_ENTRADAS' AS RESULTADO
 FROM RDB$DATABASE;

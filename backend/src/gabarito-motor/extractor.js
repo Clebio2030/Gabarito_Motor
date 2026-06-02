@@ -346,6 +346,59 @@ async function extrairCurvaAbc(idEmpresa) {
   });
 }
 
+// Passo 7: Extrair Entradas de Estoque
+
+/**
+ * Busca itens de entrada de estoque de um IDEMPRESA.
+ * A view ja filtra STATUS = 1 (entradas confirmadas).
+ * Usa VLUNIT de ENTRPRODUTO como valor de custo inicial.
+ *
+ * @param {number} idEmpresa
+ * @returns {Promise<Array>}
+ */
+async function extrairEntradas(idEmpresa) {
+  let rows = [];
+  try {
+    rows = await query(
+      `SELECT * FROM GABARITO_ENTRADAS WHERE IDEMPRESA = ? AND DTENTRADA >= DATEADD(-3 YEAR TO CURRENT_DATE) ORDER BY DTENTRADA`,
+      [idEmpresa]
+    );
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar GABARITO_ENTRADAS (IDEMPRESA=${idEmpresa}):`, err);
+  }
+
+  return (rows || []).map((row) => {
+    const str = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
+      return String(v).trim();
+    };
+    const num = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
+      return toNumber(v);
+    };
+    const dt = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
+      return v instanceof Date ? v.toISOString() : (v || null);
+    };
+
+    return {
+      notaFiscal:   str('NOTAFISCAL'),
+      dtNotaFiscal: dt('DTNOTAFISCAL'),
+      dtEntrada:    dt('DTENTRADA'),
+      cdProduto:    num('CDPRODUTO'),
+      descricao:    str('DESCRICAO'),
+      qtde:         num('QTDE'),
+      vlCusto:      num('VLCUSTO'),
+      idEmpresa:    num('IDEMPRESA'),
+      idEntrada:    num('IDENTRADA'),
+      empresa:      str('EMPRESA'),
+      total:        num('TOTAL'),
+      fornecedor:   str('FORNECEDOR'),
+      cdFornecedor: num('CDFORNECEDOR')
+    };
+  });
+}
+
 // Helpers
 
 /** Remove tudo que nao e digito para comparacao neutra de CNPJ. */
@@ -364,5 +417,6 @@ module.exports = {
   extrairFaturamentoMensal,
   extrairContasPagar,
   extrairContasReceber,
-  extrairCurvaAbc
+  extrairCurvaAbc,
+  extrairEntradas
 };
