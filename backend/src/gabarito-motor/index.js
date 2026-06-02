@@ -59,11 +59,19 @@ async function runMotor() {
 
     // Passo 3: Extrair faturamento e contas
     for (const [cnpj, idEmpresa] of Object.entries(mapaCnpjId)) {
+      logInfo(`[Gabarito] Processando CNPJ ${cnpj} (IDEMPRESA=${idEmpresa})...`);
+
+      logInfo(`[Gabarito] [${cnpj}] Extraindo faturamento mensal...`);
       const faturamentoMensal  = await extrairFaturamentoMensal(idEmpresa, anoCorrente);
+      logInfo(`[Gabarito] [${cnpj}] Extraindo contas a pagar...`);
       const contasPagarTotal   = await extrairContasPagar(idEmpresa);
+      logInfo(`[Gabarito] [${cnpj}] Extraindo contas a receber...`);
       const contasReceberTotal = await extrairContasReceber(idEmpresa);
+      logInfo(`[Gabarito] [${cnpj}] Extraindo curva ABC...`);
       const curvaAbcTotal      = await extrairCurvaAbc(idEmpresa);
+      logInfo(`[Gabarito] [${cnpj}] Extraindo entradas de estoque...`);
       const entradasTotal      = await extrairEntradas(idEmpresa);
+      logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}`);
 
       const temDados = faturamentoMensal.length > 0 || contasPagarTotal.length > 0 || contasReceberTotal.length > 0 || curvaAbcTotal.length > 0 || entradasTotal.length > 0;
 
