@@ -8,6 +8,11 @@
 const { query } = require('./firebird');
 const { logInfo, logWarn, logError } = require('../logger');
 
+function fixEncoding(v) {
+  if (Buffer.isBuffer(v)) return v.toString('latin1');
+  return String(v);
+}
+
 // Passo 2: Mapear CNPJ -> IDEMPRESA
 
 /**
@@ -124,7 +129,7 @@ async function extrairContasPagar(idEmpresa) {
   return (rows || []).map((row) => {
     const str = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return String(v).trim();
+      return fixEncoding(v).trim();
     };
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
@@ -191,7 +196,7 @@ async function extrairContasReceber(idEmpresa) {
   return (rows || []).map((row) => {
     const str = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return String(v).trim();
+      return fixEncoding(v).trim();
     };
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
@@ -295,7 +300,7 @@ async function extrairCurvaAbc(idEmpresa) {
   return (rows || []).map((row) => {
     const str = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return String(v).trim();
+      return fixEncoding(v).trim();
     };
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
@@ -386,7 +391,7 @@ async function extrairEntradas(idEmpresa) {
   return (rows || []).map((row) => {
     const str = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return String(v).trim();
+      return fixEncoding(v).trim();
     };
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
