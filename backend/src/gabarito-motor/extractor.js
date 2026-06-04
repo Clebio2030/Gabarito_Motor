@@ -241,12 +241,12 @@ async function extrairContasReceber(idEmpresa) {
  * @param {number} idEmpresa
  * @returns {Promise<Array>}
  */
-async function extrairCurvaAbc(idEmpresa) {
+async function extrairCurvaAbc(idEmpresa, desde) {
   let rows = [];
   try {
     rows = await query(
-      `SELECT * FROM GABARITO_CURVA_ABC WHERE IDEMPRESA = ? AND DTSAIDA >= DATEADD(-3 YEAR TO CURRENT_DATE) ORDER BY DTSAIDA`,
-      [idEmpresa]
+      `SELECT * FROM GABARITO_CURVA_ABC WHERE IDEMPRESA = ? AND DTSAIDA >= ? ORDER BY DTSAIDA`,
+      [idEmpresa, new Date(desde)]
     );
   } catch (err) {
     logError(`[Gabarito] Erro ao consultar GABARITO_CURVA_ABC (IDEMPRESA=${idEmpresa}):`, err);
@@ -377,12 +377,12 @@ async function extrairCurvaAbc(idEmpresa) {
  * @param {number} idEmpresa
  * @returns {Promise<Array>}
  */
-async function extrairEntradas(idEmpresa) {
+async function extrairEntradas(idEmpresa, desde) {
   let rows = [];
   try {
     rows = await query(
-      `SELECT * FROM GABARITO_ENTRADAS WHERE IDEMPRESA = ? AND DTENTRADA >= DATEADD(-3 YEAR TO CURRENT_DATE) ORDER BY DTENTRADA`,
-      [idEmpresa]
+      `SELECT * FROM GABARITO_ENTRADAS WHERE IDEMPRESA = ? AND DTENTRADA >= ? ORDER BY DTENTRADA`,
+      [idEmpresa, new Date(desde)]
     );
   } catch (err) {
     logError(`[Gabarito] Erro ao consultar GABARITO_ENTRADAS (IDEMPRESA=${idEmpresa}):`, err);
