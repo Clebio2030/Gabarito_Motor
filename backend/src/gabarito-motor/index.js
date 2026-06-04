@@ -83,6 +83,7 @@ async function runMotor() {
           dataReferencia,
           sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
           syncMode: modoSync,
+          ...(isIncrementalSync ? { desde } : {}),
           registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [], entradas: [] }]
         });
         processados++;
