@@ -242,17 +242,7 @@ async function extrairContasReceber(idEmpresa) {
  * @returns {Promise<Array>}
  */
 async function extrairCurvaAbc(idEmpresa, desde) {
-  let rows = [];
-  try {
-    rows = await query(
-      `SELECT * FROM GABARITO_CURVA_ABC WHERE IDEMPRESA = ? AND DTSAIDA >= ? ORDER BY DTSAIDA`,
-      [idEmpresa, new Date(desde)]
-    );
-  } catch (err) {
-    logError(`[Gabarito] Erro ao consultar GABARITO_CURVA_ABC (IDEMPRESA=${idEmpresa}):`, err);
-  }
-
-  // Agrega codigos de fornecedor por produto (PRODUTO_CODFORN pode ter N linhas por produto)
+  // Mapas auxiliares carregados uma vez — independente do número de fatias anuais
   const mapaCodforn = {};
   try {
     const codfornRows = await query(`SELECT CDPRODUTO, CDFORN_PROD FROM PRODUTO_CODFORN`, []);
@@ -267,7 +257,6 @@ async function extrairCurvaAbc(idEmpresa, desde) {
     logError(`[Gabarito] Erro ao consultar PRODUTO_CODFORN:`, err);
   }
 
-  // Agrega codigos de barra por produto (PRODUTO_CODBARRA pode ter N linhas por produto)
   const mapaCodbarra = {};
   try {
     const codbarraRows = await query(`SELECT CDPRODUTO, CODBARRA FROM PRODUTO_CODBARRA`, []);
@@ -282,7 +271,6 @@ async function extrairCurvaAbc(idEmpresa, desde) {
     logError(`[Gabarito] Erro ao consultar PRODUTO_CODBARRA:`, err);
   }
 
-  // Busca percentual de substituicao tributaria por produto (PRODUTOPRECO)
   const mapaPercUbstTrib = {};
   try {
     const percRows = await query(`SELECT CDPRODUTO, PERCSUBSTTRIB FROM PRODUTOPRECO`, []);
@@ -297,7 +285,31 @@ async function extrairCurvaAbc(idEmpresa, desde) {
     logError(`[Gabarito] Erro ao consultar PRODUTOPRECO:`, err);
   }
 
-  return (rows || []).map((row) => {
+  // Busca GABARITO_CURVA_ABC fatiada por ano para evitar timeout em janelas longas.
+  // Incremental (~2 meses): 1 iteração. Full (3 anos): 1 iteração por ano.
+  const desdeDate = new Date(desde);
+  const anoInicio = desdeDate.getFullYear();
+  const anoAtual  = new Date().getFullYear();
+  const allRows   = [];
+
+  for (let ano = anoInicio; ano <= anoAtual; ano++) {
+    const inicioFatia = ano === anoInicio ? desdeDate : new Date(ano, 0, 1);
+    const fimFatia    = new Date(ano + 1, 0, 1);
+
+    let rows = [];
+    try {
+      rows = await query(
+        `SELECT * FROM GABARITO_CURVA_ABC WHERE IDEMPRESA = ? AND DTSAIDA >= ? AND DTSAIDA < ? ORDER BY DTSAIDA`,
+        [idEmpresa, inicioFatia, fimFatia]
+      );
+      logInfo(`[Gabarito] GABARITO_CURVA_ABC IDEMPRESA=${idEmpresa} ano=${ano}: ${rows.length} registros`);
+    } catch (err) {
+      logError(`[Gabarito] Erro ao consultar GABARITO_CURVA_ABC (IDEMPRESA=${idEmpresa}, ano=${ano}):`, err);
+    }
+    allRows.push(...(rows || []));
+  }
+
+  return allRows.map((row) => {
     const str = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
       return fixEncoding(v).trim();
