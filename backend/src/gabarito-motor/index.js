@@ -109,6 +109,8 @@ async function runMotor() {
         Math.ceil(entradasTotal.length      / CHUNK_SIZE)
       );
 
+      let todosSucesso = true;
+
       for (let i = 0; i < maxChunks; i++) {
         const cpChunk = contasPagarTotal.slice(i * CHUNK_SIZE,   (i + 1) * CHUNK_SIZE);
         const crChunk = contasReceberTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
@@ -135,10 +137,18 @@ async function runMotor() {
         if (maxChunks > 1) {
           logInfo(`[Gabarito] Enviando lote ${i + 1}/${maxChunks} do CNPJ ${cnpj}...`);
         }
-        await enviarSync(payload);
+
+        const ok = await enviarSync(payload);
+        if (!ok) todosSucesso = false;
       }
 
-      updateState(cnpj, hash);
+      if (todosSucesso) {
+        updateState(cnpj, hash);
+        logInfo(`[Gabarito] CNPJ ${cnpj}: hash salvo — próximo ciclo detectará apenas mudanças.`);
+      } else {
+        logWarn(`[Gabarito] CNPJ ${cnpj}: um ou mais lotes falharam — hash NÃO salvo. Próximo ciclo reenviará tudo.`);
+      }
+
       processados++;
     }
 

@@ -93,7 +93,7 @@ async function enviarSync(payload) {
       });
 
       logInfo(`[Gabarito] POST /sync respondeu ${response.status} — OK.`);
-      return; // sucesso — encerra
+      return true;
 
     } catch (err) {
       const status = err.response?.status;
@@ -116,7 +116,7 @@ async function enviarSync(payload) {
       logError(
         `[Gabarito] Falha definitiva no POST /sync (tentativa ${tentativa}/${RETRY_ATTEMPTS}): ${detalhe}`
       );
-      return; // loga e segue — não rejeita para não derrubar o motor
+      return false;
     }
   }
 }
