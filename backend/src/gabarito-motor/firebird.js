@@ -2,28 +2,39 @@
 // Conexão dedicada ao motor do Gabarito.
 // Usa as mesmas variáveis de ambiente do projeto (FB_*),
 // com suporte a FB_CHARSET para bases WIN1252.
+//
+// Pool de conexões: reutiliza FB_POOL_SIZE conexões abertas (padrão: 3).
+// Timeout por query: FB_QUERY_TIMEOUT ms (padrão: 90 000 ms).
 
 const firebird = require('node-firebird');
 
+const POOL_SIZE      = parseInt(process.env.FB_POOL_SIZE    || '3',     10);
+const QUERY_TIMEOUT_MS = parseInt(process.env.FB_QUERY_TIMEOUT || '90000', 10);
+
 function getOptions() {
   return {
-    host:          process.env.FB_HOST     || '127.0.0.1',
-    port:          Number(process.env.FB_PORT || 3050),
-    database:      process.env.FB_DATABASE || '',
-    user:          process.env.FB_USER     || 'SYSDBA',
-    password:      process.env.FB_PASSWORD || 'masterkey',
+    host:           process.env.FB_HOST     || '127.0.0.1',
+    port:           Number(process.env.FB_PORT || 3050),
+    database:       process.env.FB_DATABASE || '',
+    user:           process.env.FB_USER     || 'SYSDBA',
+    password:       process.env.FB_PASSWORD || 'masterkey',
     lowercase_keys: true,
-    role:          null,
-    pageSize:      4096,
-    charset:       process.env.FB_CHARSET  || 'WIN1252'
+    role:           null,
+    pageSize:       4096,
+    charset:        process.env.FB_CHARSET  || 'WIN1252'
   };
 }
 
-const QUERY_TIMEOUT_MS = parseInt(process.env.FB_QUERY_TIMEOUT || '90000', 10);
+// Pool criado na primeira chamada e reutilizado em todo o processo.
+let _pool = null;
+function getPool() {
+  if (!_pool) _pool = firebird.pool(POOL_SIZE, getOptions());
+  return _pool;
+}
 
 /**
- * Executa uma query SQL parametrizada no Firebird e resolve com o array de linhas.
- * Rejeita automaticamente após FB_QUERY_TIMEOUT ms (padrão: 90 s) para evitar
+ * Executa uma query SQL parametrizada via pool de conexões.
+ * Rejeita automaticamente após FB_QUERY_TIMEOUT ms para evitar
  * que queries travadas bloqueiem o ciclo indefinidamente.
  * @param {string} sql
  * @param {Array}  params
@@ -40,7 +51,7 @@ function query(sql, params = []) {
       }
     }, QUERY_TIMEOUT_MS);
 
-    firebird.attach(getOptions(), (err, db) => {
+    getPool().get((err, db) => {
       if (err) {
         clearTimeout(timer);
         if (!settled) { settled = true; reject(err); }
@@ -49,7 +60,7 @@ function query(sql, params = []) {
 
       db.query(sql, params, (errQ, rows) => {
         clearTimeout(timer);
-        db.detach();
+        db.detach(); // devolve ao pool
         if (!settled) {
           settled = true;
           if (errQ) return reject(errQ);
