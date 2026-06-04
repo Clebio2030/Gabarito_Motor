@@ -100,7 +100,8 @@ async function runMotor() {
 
       logInfo(`[Gabarito] CNPJ ${cnpj}: faturamento=${faturamentoMensal.length}, ctaPagar=${contasPagarTotal.length}, ctaReceber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}`);
 
-      const CHUNK_SIZE    = 5000;
+      const CHUNK_SIZE       = 5000;
+      const PAUSA_ENTRE_LOTES = parseInt(process.env.GABARITO_PAUSA_LOTES || '2000', 10);
       const maxChunks = Math.max(
         1,
         Math.ceil(contasPagarTotal.length   / CHUNK_SIZE),
@@ -140,6 +141,9 @@ async function runMotor() {
 
         const ok = await enviarSync(payload);
         if (!ok) todosSucesso = false;
+
+        // Pausa entre lotes para não saturar a API
+        if (i < maxChunks - 1) await new Promise((r) => setTimeout(r, PAUSA_ENTRE_LOTES));
       }
 
       if (todosSucesso) {
