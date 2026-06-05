@@ -68,7 +68,7 @@ async function runMotor() {
       logInfo(`[Gabarito] [${cnpj}] Extraindo contas a receber...`);
       const contasReceberTotal = await extrairContasReceber(idEmpresa);
       logInfo(`[Gabarito] [${cnpj}] Extraindo curva ABC (desde ${desde})...`);
-      const curvaAbcTotal      = await extrairCurvaAbc(idEmpresa, desde);
+      const { rows: curvaAbcTotal, completo: curvaAbcCompleta } = await extrairCurvaAbc(idEmpresa, desde);
       logInfo(`[Gabarito] [${cnpj}] Extraindo entradas de estoque (desde ${desde})...`);
       const entradasTotal      = await extrairEntradas(idEmpresa, desde);
       logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}`);
@@ -83,7 +83,6 @@ async function runMotor() {
           dataReferencia,
           sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
           syncMode: modoSync,
-          ...(isIncrementalSync ? { desde } : {}),
           registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [], entradas: [] }]
         });
         processados++;
@@ -143,11 +142,12 @@ async function runMotor() {
         if (!ok) todosSucesso = false;
       }
 
-      if (todosSucesso) {
+      if (todosSucesso && curvaAbcCompleta) {
         updateState(cnpj, hash);
         logInfo(`[Gabarito] CNPJ ${cnpj}: hash salvo — próximo ciclo detectará apenas mudanças.`);
       } else {
-        logWarn(`[Gabarito] CNPJ ${cnpj}: um ou mais lotes falharam — hash NÃO salvo. Próximo ciclo reenviará tudo.`);
+        const motivo = !todosSucesso ? 'falha no envio de lotes' : 'erro na extração da Curva ABC (algum ano falhou)';
+        logWarn(`[Gabarito] CNPJ ${cnpj}: hash NÃO salvo (${motivo}). Próximo ciclo reenviará tudo.`);
       }
 
       processados++;
