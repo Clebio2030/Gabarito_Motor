@@ -287,10 +287,13 @@ async function extrairCurvaAbc(idEmpresa, desde) {
 
   // Busca GABARITO_CURVA_ABC fatiada por ano para evitar timeout em janelas longas.
   // Incremental (~2 meses): 1 iteração. Full (3 anos): 1 iteração por ano.
+  // Se qualquer ano falhar, `completo=false` é retornado para que o motor
+  // não salve o hash — garantindo retry automático no próximo ciclo.
   const desdeDate = new Date(desde);
   const anoInicio = desdeDate.getFullYear();
   const anoAtual  = new Date().getFullYear();
   const allRows   = [];
+  let completo    = true;
 
   for (let ano = anoInicio; ano <= anoAtual; ano++) {
     const inicioFatia = ano === anoInicio ? desdeDate : new Date(ano, 0, 1);
@@ -305,11 +308,13 @@ async function extrairCurvaAbc(idEmpresa, desde) {
       logInfo(`[Gabarito] GABARITO_CURVA_ABC IDEMPRESA=${idEmpresa} ano=${ano}: ${rows.length} registros`);
     } catch (err) {
       logError(`[Gabarito] Erro ao consultar GABARITO_CURVA_ABC (IDEMPRESA=${idEmpresa}, ano=${ano}):`, err);
+      completo = false;
     }
     allRows.push(...(rows || []));
   }
 
-  return allRows.map((row) => {
+  const rows = allRows;
+  return { rows: rows.map((row) => {
     const str = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
       return fixEncoding(v).trim();
@@ -376,7 +381,7 @@ async function extrairCurvaAbc(idEmpresa, desde) {
       icms:              num('ICMS'),
       percUbstTrib:      mapaPercUbstTrib[cdProduto] ?? 0
     };
-  });
+  }), completo };
 }
 
 // Passo 7: Extrair Entradas de Estoque
