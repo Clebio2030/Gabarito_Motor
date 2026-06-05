@@ -437,7 +437,162 @@ async function extrairEntradas(idEmpresa, desde) {
   });
 }
 
-// Helpers
+// ── Streaming Curva ABC (Full Sync) ───────────────────────────────────────────
+
+/**
+ * Carrega os mapas auxiliares da Curva ABC (codforn, codbarra, percUbstTrib).
+ * Chamado uma única vez por CNPJ antes do loop de anos.
+ */
+async function buildMapasCurvaAbc() {
+  const mapaCodforn = {};
+  try {
+    const rows = await query(`SELECT CDPRODUTO, CDFORN_PROD FROM PRODUTO_CODFORN`, []);
+    for (const r of (rows || [])) {
+      const cd = r.CDPRODUTO ?? r.cdproduto;
+      const cod = String(r.CDFORN_PROD ?? r.cdforn_prod ?? '').trim();
+      if (!cd || !cod) continue;
+      if (mapaCodforn[cd]) mapaCodforn[cd].push(cod);
+      else mapaCodforn[cd] = [cod];
+    }
+  } catch (err) { logError(`[Gabarito] Erro ao consultar PRODUTO_CODFORN:`, err); }
+
+  const mapaCodbarra = {};
+  try {
+    const rows = await query(`SELECT CDPRODUTO, CODBARRA FROM PRODUTO_CODBARRA`, []);
+    for (const r of (rows || [])) {
+      const cd = r.CDPRODUTO ?? r.cdproduto;
+      const cod = String(r.CODBARRA ?? r.codbarra ?? '').trim();
+      if (!cd || !cod) continue;
+      if (mapaCodbarra[cd]) mapaCodbarra[cd].push(cod);
+      else mapaCodbarra[cd] = [cod];
+    }
+  } catch (err) { logError(`[Gabarito] Erro ao consultar PRODUTO_CODBARRA:`, err); }
+
+  const mapaPercUbstTrib = {};
+  try {
+    const rows = await query(`SELECT CDPRODUTO, PERCSUBSTTRIB FROM PRODUTOPRECO`, []);
+    for (const r of (rows || [])) {
+      const cd = r.CDPRODUTO ?? r.cdproduto;
+      if (cd == null) continue;
+      if (mapaPercUbstTrib[cd] === undefined) {
+        mapaPercUbstTrib[cd] = Number(r.PERCSUBSTTRIB ?? r.percsubsttrib ?? 0) || 0;
+      }
+    }
+  } catch (err) { logError(`[Gabarito] Erro ao consultar PRODUTOPRECO:`, err); }
+
+  return { mapaCodforn, mapaCodbarra, mapaPercUbstTrib };
+}
+
+/**
+ * Mapeia uma linha bruta do Firebird para o formato de saída da Curva ABC.
+ */
+function mapCurvaAbcRow(row, mapaCodforn, mapaCodbarra, mapaPercUbstTrib) {
+  const str = (campo) => {
+    const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
+    return fixEncoding(v).trim();
+  };
+  const num = (campo) => toNumber(row[campo] ?? row[campo.toLowerCase()] ?? 0);
+  const dt  = (campo) => {
+    const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
+    return v instanceof Date ? v.toISOString() : (v || null);
+  };
+  const cdProduto = num('CDPRODUTO');
+  return {
+    cdProduto,
+    produto:           str('PRODUTO'),
+    unidade:           str('UNIDADE'),
+    idEmpresa:         num('IDEMPRESA'),
+    nrPedido:          num('NRPEDIDO'),
+    idPreco:           num('IDPRECO'),
+    cdDeposito:        num('CDDEPOSITO'),
+    deposito:          str('DEPOSITO'),
+    vlUnit:            num('VLUNIT'),
+    vlCusto:           num('VLCUSTO'),
+    qtdProduto:        num('QTDPRODUTO'),
+    qtdeAtual:         num('QTDEATUAL'),
+    qtdeMinima:        num('QTDEMINIMA'),
+    descProd:          num('DESCPROD'),
+    descPed:           num('DESCPED'),
+    total:             num('TOTAL'),
+    subTotal:          num('SUBTOTAL'),
+    tpEntrega:         num('TPENTREGA'),
+    inativo:           str('INATIVO'),
+    promocao:          str('PROMOCAO'),
+    tabPromocao:       str('TABPROMOCAO'),
+    codCentral:        str('COD_CENTRAL'),
+    cdFabricante:      num('CDFABRICANTE'),
+    fabricante:        str('FABRICANTE'),
+    cdFornecedor:      num('CDFORNECEDOR'),
+    cdGrupo:           num('CDGRUPO'),
+    grupo:             str('GRUPO'),
+    cdTipo:            num('CDTIPO'),
+    tipo:              str('TIPO'),
+    cdLinha:           num('CDLINHA'),
+    linha:             str('LINHA'),
+    cdFamilia:         num('CDFAMILIA'),
+    familia:           str('FAMILIA'),
+    cdCliente:         num('CDCLIENTE'),
+    cdVendedor:        num('CDVENDEDOR'),
+    dtSaida:           dt('DTSAIDA'),
+    status:            num('STATUS'),
+    vlComDescComPromo: num('VLCOMDESCCOMPROMO'),
+    vlSemDescComPromo: num('VLSEMDESCCOMPROMO'),
+    vlComDescSemPromo: num('VLCOMDESCSEMPROMO'),
+    vlSemDescSemPromo: num('VLSEMDESCSEMPROMO'),
+    fatorConv:         num('FATORCONV'),
+    vlCustoCompra:     num('VLCUSTO_COMPRA'),
+    codFornProd:       (mapaCodforn[cdProduto] || []).join(', '),
+    codBarra:          (mapaCodbarra[cdProduto] || []).join(', '),
+    frete:             num('FRETE'),
+    ipi:               num('IPI'),
+    icms:              num('ICMS'),
+    percUbstTrib:      mapaPercUbstTrib[cdProduto] ?? 0
+  };
+}
+
+/**
+ * Versão streaming da Curva ABC para o full sync.
+ * Carrega mapas auxiliares uma vez e processa cada ano separadamente,
+ * chamando onAno({ ano, anoDesde, rows, completo }) e aguardando.
+ * Cada ano é liberado da memória antes do próximo ser carregado.
+ *
+ * @param {number}   idEmpresa
+ * @param {string}   desde       YYYY-MM-DD — data de início da janela
+ * @param {Function} onAno       async ({ ano, anoDesde, rows, completo }) => void
+ */
+async function extrairCurvaAbcStreaming(idEmpresa, desde, onAno) {
+  const mapas = await buildMapasCurvaAbc();
+
+  const desdeDate = new Date(desde);
+  const anoInicio = desdeDate.getFullYear();
+  const anoAtual  = new Date().getFullYear();
+
+  for (let ano = anoInicio; ano <= anoAtual; ano++) {
+    const inicioFatia = ano === anoInicio ? desdeDate : new Date(ano, 0, 1);
+    const fimFatia    = new Date(ano + 1, 0, 1);
+    // Data local YYYY-MM-DD (evita deslocamento de fuso do toISOString)
+    const anoDesde = `${inicioFatia.getFullYear()}-${String(inicioFatia.getMonth() + 1).padStart(2, '0')}-${String(inicioFatia.getDate()).padStart(2, '0')}`;
+
+    let rawRows = [];
+    let completo = true;
+    try {
+      rawRows = await query(
+        `SELECT * FROM GABARITO_CURVA_ABC WHERE IDEMPRESA = ? AND DTSAIDA >= ? AND DTSAIDA < ? ORDER BY DTSAIDA`,
+        [idEmpresa, inicioFatia, fimFatia]
+      );
+      logInfo(`[Gabarito] GABARITO_CURVA_ABC IDEMPRESA=${idEmpresa} ano=${ano}: ${rawRows.length} registros`);
+    } catch (err) {
+      logError(`[Gabarito] Erro ao consultar GABARITO_CURVA_ABC (IDEMPRESA=${idEmpresa}, ano=${ano}):`, err);
+      completo = false;
+    }
+
+    // Mapeia e passa para o callback — rawRows pode ser GC'd após o await
+    const rows = (rawRows || []).map(r => mapCurvaAbcRow(r, mapas.mapaCodforn, mapas.mapaCodbarra, mapas.mapaPercUbstTrib));
+    await onAno({ ano, anoDesde, rows, completo });
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Remove tudo que nao e digito para comparacao neutra de CNPJ. */
 function normalizarCnpj(cnpj) {
@@ -456,5 +611,6 @@ module.exports = {
   extrairContasPagar,
   extrairContasReceber,
   extrairCurvaAbc,
+  extrairCurvaAbcStreaming,
   extrairEntradas
 };

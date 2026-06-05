@@ -18,8 +18,10 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.e
 const cron = require('node-cron');
 const { logInfo, logWarn, logError } = require('../logger');
 const { buscarCnpjsAtivos, enviarSync } = require('./sender');
-const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairEntradas } = require('./extractor');
+const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas } = require('./extractor');
 const { checkStateChanged, getLastSyncedAt, updateState } = require('./syncState');
+
+const CHUNK_SIZE = 5000;
 
 let isMotorRunning = false;
 
@@ -53,14 +55,31 @@ async function runMotor() {
     ignorados = cnpjsAtivos.length - Object.keys(mapaCnpjId).length;
 
     for (const [cnpj, idEmpresa] of Object.entries(mapaCnpjId)) {
-      // Determina a janela de extração para Curva ABC e Entradas
-      const lastSyncedAt     = getLastSyncedAt(cnpj);
+      const lastSyncedAt      = getLastSyncedAt(cnpj);
       const isIncrementalSync = lastSyncedAt !== null;
-      const desde            = computarDesde(lastSyncedAt);
-      const modoSync         = isIncrementalSync ? 'incremental' : 'full';
+      const desde             = computarDesde(lastSyncedAt);
+      const modoSync          = isIncrementalSync ? 'incremental' : 'full';
 
       logInfo(`[Gabarito] Processando CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) — modo: ${modoSync}, desde: ${desde}`);
 
+      // ── FULL SYNC: streaming por ano (memória limitada) ──────────────────────
+      if (!isIncrementalSync) {
+        const r = await runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente);
+        if (r.todosSucesso && r.completo) {
+          // Hash sentinela: marca lastSyncedAt para os próximos ciclos serem
+          // incrementais. O 1º incremental sempre reenviará (hash de 2 meses
+          // difere do sentinela) e gravará o hash incremental real.
+          updateState(cnpj, `full-${hojeFormatado()}`);
+          logInfo(`[Gabarito] CNPJ ${cnpj}: full sync concluído — hash salvo.`);
+          processados++;
+        } else {
+          const motivo = !r.todosSucesso ? 'falha no envio de lotes' : 'erro na extração da Curva ABC (algum ano falhou)';
+          logWarn(`[Gabarito] CNPJ ${cnpj}: hash NÃO salvo (${motivo}). Próximo ciclo reenviará tudo.`);
+        }
+        continue;
+      }
+
+      // ── INCREMENTAL: janela de 2 meses (cabe em memória) ─────────────────────
       logInfo(`[Gabarito] [${cnpj}] Extraindo faturamento mensal...`);
       const faturamentoMensal  = await extrairFaturamentoMensal(idEmpresa, anoCorrente);
       logInfo(`[Gabarito] [${cnpj}] Extraindo contas a pagar...`);
@@ -83,6 +102,7 @@ async function runMotor() {
           dataReferencia,
           sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
           syncMode: modoSync,
+          desde,
           registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [], entradas: [] }]
         });
         processados++;
@@ -100,7 +120,6 @@ async function runMotor() {
 
       logInfo(`[Gabarito] CNPJ ${cnpj}: faturamento=${faturamentoMensal.length}, ctaPagar=${contasPagarTotal.length}, ctaReceber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}`);
 
-      const CHUNK_SIZE = 5000;
       const maxChunks = Math.max(
         1,
         Math.ceil(contasPagarTotal.length   / CHUNK_SIZE),
@@ -129,7 +148,7 @@ async function runMotor() {
           dataReferencia,
           sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
           syncMode: modoSync,
-          desde: isIncrementalSync ? desde : undefined,
+          desde,
           chunkInfo: { atual: i + 1, total: maxChunks },
           registros: [registro]
         };
@@ -163,6 +182,94 @@ async function runMotor() {
   logInfo(`[Gabarito] Sync concluido: processados=${processados}, semDados=${semDados}, ignorados=${ignorados}, duracao=${duracao}ms`);
 
   agendarProximoCiclo();
+}
+
+// ── Full Sync (streaming) ──────────────────────────────────────────────────────
+
+/**
+ * Carga inicial de um CNPJ sem estourar memória.
+ *
+ * Estratégia (usa apenas contratos já comprovados em produção):
+ *   1. Dados base (faturamento, contas a pagar/receber, entradas) — volume
+ *      limitado — enviados como uma operação `full` em lotes.
+ *   2. Curva ABC enviada ano a ano: cada ano é uma operação `incremental`
+ *      com `desde` = início daquele ano. Como os anos vão em ordem crescente
+ *      e não se sobrepõem, cada ano apaga apenas o seu período e preserva os
+ *      anteriores. O primeiro ano remove qualquer dado parcial antigo.
+ *      Apenas um ano fica em memória por vez.
+ *
+ * @returns {Promise<{todosSucesso: boolean, completo: boolean}>}
+ */
+async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) {
+  const sourceVersion = process.env.GABARITO_VERSION || '1.0.0';
+  let todosSucesso = true;
+  let completo     = true;
+
+  // 1) Dados base (cabem em memória)
+  logInfo(`[Gabarito] [${cnpj}] (full) Extraindo dados base...`);
+  const faturamentoMensal  = await extrairFaturamentoMensal(idEmpresa, anoCorrente);
+  let   contasPagarTotal   = await extrairContasPagar(idEmpresa);
+  let   contasReceberTotal = await extrairContasReceber(idEmpresa);
+  let   entradasTotal      = await extrairEntradas(idEmpresa, desde);
+
+  const baseChunks = Math.max(
+    1,
+    Math.ceil(contasPagarTotal.length   / CHUNK_SIZE),
+    Math.ceil(contasReceberTotal.length / CHUNK_SIZE),
+    Math.ceil(entradasTotal.length      / CHUNK_SIZE)
+  );
+
+  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length} (${baseChunks} lote(s))`);
+
+  for (let i = 0; i < baseChunks; i++) {
+    const cpChunk = contasPagarTotal.slice(i * CHUNK_SIZE,   (i + 1) * CHUNK_SIZE);
+    const crChunk = contasReceberTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+    const enChunk = entradasTotal.slice(i * CHUNK_SIZE,      (i + 1) * CHUNK_SIZE);
+    const fmChunk = (i === 0) ? faturamentoMensal : [];
+
+    const registro = { cnpj };
+    if (fmChunk.length > 0) registro.faturamentoMensal = fmChunk;
+    if (cpChunk.length > 0) registro.contasPagar       = cpChunk;
+    if (crChunk.length > 0) registro.contasReceber     = crChunk;
+    if (enChunk.length > 0) registro.entradas          = enChunk;
+
+    logInfo(`[Gabarito] [${cnpj}] (full) Enviando base ${i + 1}/${baseChunks}...`);
+    const ok = await enviarSync({
+      dataReferencia,
+      sourceVersion,
+      syncMode: 'full',
+      chunkInfo: { atual: i + 1, total: baseChunks },
+      registros: [registro]
+    });
+    if (!ok) todosSucesso = false;
+  }
+
+  // Libera os arrays base antes do streaming da curva (reduz pico de memória)
+  contasPagarTotal = contasReceberTotal = entradasTotal = null;
+
+  // 2) Curva ABC em streaming, um ano por vez
+  await extrairCurvaAbcStreaming(idEmpresa, desde, async ({ ano, anoDesde, rows, completo: anoCompleto }) => {
+    if (!anoCompleto) completo = false;
+
+    const yearChunks = Math.max(1, Math.ceil(rows.length / CHUNK_SIZE));
+    for (let i = 0; i < yearChunks; i++) {
+      const caChunk = rows.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      if (caChunk.length === 0) continue;
+
+      logInfo(`[Gabarito] [${cnpj}] (full) Enviando curva ${ano} lote ${i + 1}/${yearChunks}...`);
+      const ok = await enviarSync({
+        dataReferencia,
+        sourceVersion,
+        syncMode: 'incremental',
+        desde: anoDesde,
+        chunkInfo: { atual: i + 1, total: yearChunks },
+        registros: [{ cnpj, curvaAbc: caChunk }]
+      });
+      if (!ok) todosSucesso = false;
+    }
+  });
+
+  return { todosSucesso, completo };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
