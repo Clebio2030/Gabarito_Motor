@@ -11,6 +11,10 @@ const { logInfo, logWarn, logError } = require('../logger');
 
 const RETRY_ATTEMPTS  = 5;
 const RETRY_DELAY_MS  = 60_000; // padrão: 60s (alinhado com retry_after do Cloudflare)
+// Timeout do POST. O 1º lote de cada ano da curva dispara um delete pesado na
+// API (apaga o período antes de inserir) que pode passar de 60s; um timeout
+// curto provoca retry prematuro enquanto a API ainda processa, gerando 400/502.
+const POST_TIMEOUT_MS = parseInt(process.env.GABARITO_HTTP_TIMEOUT || '120000', 10);
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -92,7 +96,7 @@ async function enviarSync(payload) {
     try {
       const response = await axios.post(url, payload, {
         headers: getHeaders(),
-        timeout: 60_000
+        timeout: POST_TIMEOUT_MS
       });
 
       logInfo(`[Gabarito] POST /sync respondeu ${response.status} — OK.`);
@@ -100,7 +104,13 @@ async function enviarSync(payload) {
 
     } catch (err) {
       const status = err.response?.status;
-      const isServerError = !status || status >= 500; // inclui timeout (sem status)
+      // 400 do nginx (HTML, nivel de infra) é transitório — surge quando o retry
+      // bate na API ainda processando o delete pesado. Diferente de um 400 do app
+      // (JSON, validação), que NÃO deve ser retentado.
+      const isNginx400 = status === 400
+        && typeof err.response?.data === 'string'
+        && err.response.data.includes('nginx');
+      const isServerError = !status || status >= 500 || isNginx400; // inclui timeout (sem status)
 
       if (isServerError && tentativa < RETRY_ATTEMPTS) {
         const espera = resolverEspera(err);
