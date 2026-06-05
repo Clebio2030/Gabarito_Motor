@@ -7,16 +7,21 @@ if (!fs.existsSync(logsDir)) {
   fs.mkdirSync(logsDir, { recursive: true });
 }
 
+function dataLocalFormatada(d) {
+  const ano = d.getFullYear();
+  const mes = String(d.getMonth() + 1).padStart(2, '0');
+  const dia = String(d.getDate()).padStart(2, '0');
+  return `${ano}-${mes}-${dia}`;
+}
+
 function getLogFileName() {
-  const agora = new Date();
-  const dataString = agora.toISOString().slice(0, 10); // YYYY-MM-DD
-  return path.join(logsDir, `gabarito-${dataString}.log`);
+  return path.join(logsDir, `gabarito-${dataLocalFormatada(new Date())}.log`);
 }
 
 function formatMessage(level, msg) {
   const agora = new Date();
   const horaString = agora.toLocaleTimeString('pt-BR');
-  return `[${agora.toISOString().slice(0, 10)} ${horaString}] [${level}] ${msg}\n`;
+  return `[${dataLocalFormatada(agora)} ${horaString}] [${level}] ${msg}\n`;
 }
 
 function writeToLog(level, msg) {
