@@ -58,11 +58,11 @@ async function buscarCnpjsAtivos() {
 
     } catch (err) {
       const status = err.response?.status;
-      const isServerError = status && status >= 500;
+      const isServerError = !status || status >= 500; // inclui timeout (sem status)
 
       if (isServerError && tentativa < RETRY_ATTEMPTS) {
         const espera = resolverEspera(err);
-        logWarn(`[Gabarito] GET /companies retornou ${status}. Tentativa ${tentativa}/${RETRY_ATTEMPTS}. Aguardando ${espera / 1000}s...`);
+        logWarn(`[Gabarito] GET /companies retornou ${status || 'timeout'}. Tentativa ${tentativa}/${RETRY_ATTEMPTS}. Aguardando ${espera / 1000}s...`);
         await sleep(espera);
         continue;
       }
