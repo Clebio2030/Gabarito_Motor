@@ -310,7 +310,7 @@ async function extrairCurvaAbc(idEmpresa, desde) {
       logError(`[Gabarito] Erro ao consultar GABARITO_CURVA_ABC (IDEMPRESA=${idEmpresa}, ano=${ano}):`, err);
       completo = false;
     }
-    allRows.push(...(rows || []));
+    for (const row of (rows || [])) allRows.push(row);
   }
 
   const rows = allRows;
