@@ -223,7 +223,7 @@ WHERE
    - ORIGEM         : origem do lancamento
    - CAIXA          : descricao do caixa (TPCAIXA)
 
-   Filtro: STATUS IN (1, 2).
+   Filtro: STATUS IN (1, 2) e DTMOV dos ultimos 3 anos.
    ------------------------------------------------------------------ */
 
 CREATE OR ALTER VIEW GABARITO_CTARCEBER_GERAL (
@@ -281,7 +281,8 @@ FROM CTARECEBER a
     LEFT JOIN CLIENTE          g ON (g.CDCLIENTE   = a.CDCLIENTE)
     LEFT JOIN TPCAIXA          h ON (h.CDCAIXA     = a.CAIXA)
 WHERE
-    a.STATUS IN (1, 2);
+    a.STATUS IN (1, 2)
+    AND a.DTMOV >= DATEADD(-3 YEAR TO CURRENT_DATE);
 
 
 /* V_CURVA_ABC
