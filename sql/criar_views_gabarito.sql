@@ -112,7 +112,7 @@ GROUP BY
    - CONTA3         : subsubconta
    - CONTA4         : subsubsubconta
 
-   Filtro: STATUS IN (1, 2) e DTINCLUSAO dos ultimos 3 anos.
+   Filtro: STATUS IN (1, 2) e DTALTER dos ultimos 3 anos.
    ------------------------------------------------------------------ */
 
 CREATE OR ALTER VIEW GABARITO_CTAPAGAR_GERAL (
@@ -194,7 +194,7 @@ FROM CTAPAGAR a
                                 AND (g.CDCONTA          = a.CDCONTA)
 WHERE
     a.STATUS IN (1, 2)
-    AND a.DTINCLUSAO >= DATEADD(-3 YEAR TO CURRENT_DATE);
+    AND a.DTALTER >= DATEADD(-3 YEAR TO CURRENT_DATE);
 
 
 /* GABARITO_CTARCEBER_GERAL
@@ -223,7 +223,7 @@ WHERE
    - ORIGEM         : origem do lancamento
    - CAIXA          : descricao do caixa (TPCAIXA)
 
-   Filtro: STATUS IN (1, 2) e DTMOV dos ultimos 3 anos.
+   Filtro: STATUS IN (1, 2) e DTALTER dos ultimos 3 anos.
    ------------------------------------------------------------------ */
 
 CREATE OR ALTER VIEW GABARITO_CTARCEBER_GERAL (
@@ -282,7 +282,7 @@ FROM CTARECEBER a
     LEFT JOIN TPCAIXA          h ON (h.CDCAIXA     = a.CAIXA)
 WHERE
     a.STATUS IN (1, 2)
-    AND a.DTMOV >= DATEADD(-3 YEAR TO CURRENT_DATE);
+    AND a.DTALTER >= DATEADD(-3 YEAR TO CURRENT_DATE);
 
 
 /* V_CURVA_ABC
