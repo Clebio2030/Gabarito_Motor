@@ -167,6 +167,13 @@ if exist "setup-env.js" (
 
 echo.
 echo [SUCESSO] Configuracao concluida!
+
+:: Atualizar Config do Atualizador (Padrao)
+echo.
+echo Atualizando configuracoes do atualizador...
+cd /d "%~dp0\updater"
+node setup-updater.js "Gabarito" "3001"
+
 cd ..
 goto CONFIG_FIREBIRD
 

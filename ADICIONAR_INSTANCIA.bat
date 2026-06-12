@@ -83,6 +83,12 @@ echo Criando/Atualizando configuracoes de ambiente...
 cd /d "%~dp0\backend"
 node setup-env.js "!FB_HOST_IN!" "!FB_PORT_IN!" "!FB_DATABASE_IN!" "!GABARITO_TOKEN_IN!" "!INSTANCE_PORT!"
 
+:: 3.1 Atualizar Config do Atualizador
+echo.
+echo Atualizando configuracoes do atualizador...
+cd /d "%~dp0\updater"
+node setup-updater.js "!INSTANCE_NAME!" "!INSTANCE_PORT!"
+
 :: 4. Instalar Serviço
 echo.
 echo Instalando Servico Windows e Tarefa Agendada...
