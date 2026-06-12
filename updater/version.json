@@ -1,8 +1,8 @@
-﻿{
-  "currentVersion": "0.0.0",
-  "lastCheckAt": null,
-  "lastUpdateAt": null,
-  "lastStatus": "never",
-  "lastReleaseTag": null,
-  "lastError": null
+{
+  "currentVersion": "1.4",
+  "lastCheckAt": "2026-06-09T06:00:01.904Z",
+  "lastUpdateAt": "2026-06-04T06:00:12.235Z",
+  "lastStatus": "error",
+  "lastReleaseTag": "v1.4",
+  "lastError": "Falha ao aplicar SQL das views. Saída: \nStatement failed, SQLSTATE = 08006\r\nUnable to complete network request to host \"127.0.0.1\".\r\n-Failed to establish a connection.\r\nAfter line 0 in file C:\\Administracao\\Gabarito\\sql\\criar_views_gabarito.sql\r\nUse CONNECT or CREATE DATABASE to specify a database\r\nUse CONNECT or CREATE DATABASE to specify a database\r\nUse CONNECT or CREATE DATABASE to specify a database\r\nUse CONNECT or CREATE DATABASE to specify a database\r\nUse CONNECT or CREATE DATABASE to specify a database\r\nUse CONNECT or CREATE DATABASE to specify a database\r\nUse CONNECT or CREATE DATABASE to specify a database\r\nUse CONNECT or CREATE DATABASE to specify a database\r\n"
 }

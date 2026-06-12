@@ -1,4 +1,4 @@
-﻿{
+{
   "githubOwner": "Clebio2030",
   "githubRepo": "Gabarito_Motor",
   "githubToken": "",
@@ -11,7 +11,7 @@
     "backend",
     "sql",
     "criar_views_gabarito.bat",
-    "instalador.bat",
+    "EXECUTE_INSTALADOR.bat",
     "instalar_servico.bat",
     "deletar_servico.bat"
   ],
