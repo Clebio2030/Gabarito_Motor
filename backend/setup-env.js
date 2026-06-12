@@ -5,8 +5,26 @@ const os = require('os');
 // Caminho do arquivo .env (na raiz do backend)
 const envPath = path.join(__dirname, '.env');
 
+// Template padrão com valores que devem existir se o arquivo for novo
+const DEFAULT_ENV = `# Firebird
+FB_HOST=127.0.0.1
+FB_PORT=3050
+FB_DATABASE=
+FB_USER=SYSDBA
+FB_PASSWORD=masterkey
+FB_CHARSET=WIN1252
+
+# Gabarito
+GABARITO_TOKEN=
+GABARITO_API_URL=https://gabarito.csdigitalz.com.br/api/v1/sync
+GABARITO_COMPANIES_URL=https://gabarito.csdigitalz.com.br/api/v1/companies
+GABARITO_VERSION=1.0.0
+GABARITO_RUN_ON_START=true
+# CRON_MODE: test = roda todo minuto | prod = roda 1x/hora das 08h-22h
+GABARITO_CRON_MODE=prod
+`;
+
 // Argumentos passados pelo script: host, port, database, token
-// Se o argumento for "EMPTY_VAL", significa que o usuário não digitou nada (manter valor atual)
 const args = process.argv.slice(2);
 const updates = {
   FB_HOST: args[0] === 'EMPTY_VAL' ? '' : args[0],
@@ -16,80 +34,54 @@ const updates = {
 };
 
 console.log('Iniciando configuração do ambiente...');
-console.log('Valores recebidos:', updates);
 
-let lines = [];
+let content = '';
 
-// Lê o arquivo existente se houver
 if (fs.existsSync(envPath)) {
-  try {
-    const content = fs.readFileSync(envPath, 'utf8');
-    // Divide por quebra de linha (suporta Windows \r\n e Linux \n)
-    lines = content.split(/\r?\n/);
-  } catch (err) {
-    console.error('Erro ao ler arquivo .env:', err.message);
-    // Se der erro ao ler, assume vazio
-    lines = [];
-  }
+  content = fs.readFileSync(envPath, 'utf8');
 } else {
-  console.log('Arquivo .env não encontrado. Criando novo.');
+  console.log('Arquivo .env não encontrado. Usando template padrão.');
+  content = DEFAULT_ENV;
 }
 
+let lines = content.split(/\r?\n/);
 const processedKeys = new Set();
 const newLines = [];
 
-// 1. Processa linhas existentes
+// 1. Processa linhas existentes (ou do template)
 for (let i = 0; i < lines.length; i++) {
   const line = lines[i];
-  // Regex simples para identificar CHAVE=VALOR
-  // Pega chaves que começam com letra/underscore, seguidas de =
   const match = line.match(/^\s*([A-Z0-9_]+)\s*=(.*)/i);
 
   if (match) {
     const key = match[1].trim();
-    // Se é uma das chaves que estamos configurando
     if (Object.prototype.hasOwnProperty.call(updates, key)) {
-      // Evita duplicatas se a chave aparecer mais de uma vez no arquivo
-      if (processedKeys.has(key)) {
-        continue; 
-      }
-      
+      if (processedKeys.has(key)) continue;
       processedKeys.add(key);
       
-      // Se o usuário passou um valor novo (não vazio), atualiza
-      // Se passou vazio (EMPTY_VAL tratado antes), mantém o valor original da linha
       if (updates[key] !== '') {
         console.log(`Atualizando ${key}...`);
         newLines.push(`${key}=${updates[key]}`);
       } else {
-        console.log(`Mantendo ${key} atual.`);
         newLines.push(line);
       }
     } else {
-      // Outras chaves (ex: PORT, configs extras) mantém como está
       newLines.push(line);
     }
   } else {
-    // Comentários ou linhas em branco
     newLines.push(line);
   }
 }
 
-// 2. Adiciona chaves que não existiam no arquivo
+// 2. Adiciona chaves que não existiam (caso o template mude no futuro)
 Object.keys(updates).forEach(key => {
-  // Se ainda não processamos essa chave E temos um valor para ela
   if (!processedKeys.has(key) && updates[key] !== '') {
     console.log(`Adicionando nova chave ${key}...`);
     newLines.push(`${key}=${updates[key]}`);
   }
 });
 
-// 3. Remove linhas em branco excessivas no final
-while (newLines.length > 0 && newLines[newLines.length - 1].trim() === '') {
-  newLines.pop();
-}
-
-// 4. Grava o arquivo
+// Grava o arquivo
 try {
   const newContent = newLines.join(os.EOL);
   fs.writeFileSync(envPath, newContent, 'utf8');
@@ -98,4 +90,3 @@ try {
   console.error('Erro ao salvar arquivo .env:', err.message);
   process.exit(1);
 }
-
