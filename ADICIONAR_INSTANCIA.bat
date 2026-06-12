@@ -24,6 +24,15 @@ echo Use este script para configurar um SEGUNDO banco de dados
 echo nesta mesma maquina, rodando em uma pasta SEPARADA.
 echo.
 
+:: Detecta se o Node esta no PATH
+where node >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERRO] Node.js nao encontrado no PATH. 
+    echo Certifique-se de que o Node.js esta instalado.
+    pause
+    exit /b
+)
+
 :: 1. Definição do Nome da Instância
 :ASK_NAME
 set "INSTANCE_NAME="
@@ -65,7 +74,7 @@ if "!FB_DATABASE_IN!"=="" (
 set "GABARITO_TOKEN_IN="
 set /p GABARITO_TOKEN_IN="GABARITO_TOKEN (Token de integracao deste banco): "
 if "!GABARITO_TOKEN_IN!"=="" (
-    echo [AVISO] Token nao informado. Voce precisara editar o .env manualmente depois.
+    set "GABARITO_TOKEN_IN=EMPTY_VAL"
 )
 
 :: 3. Atualizar .env
@@ -78,7 +87,11 @@ node setup-env.js "!FB_HOST_IN!" "!FB_PORT_IN!" "!FB_DATABASE_IN!" "!GABARITO_TO
 echo.
 echo Instalando Servico Windows e Tarefa Agendada...
 cd /d "%~dp0"
-call instalar_servico.bat "!INSTANCE_NAME!" "!INSTANCE_NAME!Updater"
+if exist "instalar_servico.bat" (
+    call instalar_servico.bat "!INSTANCE_NAME!" "!INSTANCE_NAME!Updater"
+) else (
+    echo [ERRO] Arquivo instalar_servico.bat nao encontrado nesta pasta!
+)
 
 echo.
 echo ##################################################
