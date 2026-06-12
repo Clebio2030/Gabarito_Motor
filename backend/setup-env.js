@@ -6,7 +6,10 @@ const os = require('os');
 const envPath = path.join(__dirname, '.env');
 
 // Template padrão com valores que devem existir se o arquivo for novo
-const DEFAULT_ENV = `# Firebird
+const DEFAULT_ENV = `# Servidor
+PORT=3001
+
+# Firebird
 FB_HOST=127.0.0.1
 FB_PORT=3050
 FB_DATABASE=
@@ -24,13 +27,14 @@ GABARITO_RUN_ON_START=true
 GABARITO_CRON_MODE=prod
 `;
 
-// Argumentos passados pelo script: host, port, database, token
+// Argumentos passados pelo script: host, port, database, token, serverPort
 const args = process.argv.slice(2);
 const updates = {
   FB_HOST: args[0] === 'EMPTY_VAL' ? '' : args[0],
   FB_PORT: args[1] === 'EMPTY_VAL' ? '' : args[1],
   FB_DATABASE: args[2] === 'EMPTY_VAL' ? '' : args[2],
-  GABARITO_TOKEN: args[3] === 'EMPTY_VAL' ? '' : args[3]
+  GABARITO_TOKEN: args[3] === 'EMPTY_VAL' ? '' : args[3],
+  PORT: args[4] === 'EMPTY_VAL' ? '' : args[4]
 };
 
 console.log('Iniciando configuração do ambiente...');
@@ -58,8 +62,8 @@ for (let i = 0; i < lines.length; i++) {
     if (Object.prototype.hasOwnProperty.call(updates, key)) {
       if (processedKeys.has(key)) continue;
       processedKeys.add(key);
-
-      if (updates[key] !== '') {
+      
+      if (updates[key] && updates[key] !== 'EMPTY_VAL' && updates[key] !== '') {
         console.log(`Atualizando ${key}...`);
         newLines.push(`${key}=${updates[key]}`);
       } else {
@@ -73,9 +77,9 @@ for (let i = 0; i < lines.length; i++) {
   }
 }
 
-// 2. Adiciona chaves que não existiam (caso o template mude no futuro)
+// 2. Adiciona chaves que não existiam
 Object.keys(updates).forEach(key => {
-  if (!processedKeys.has(key) && updates[key] !== '') {
+  if (!processedKeys.has(key) && updates[key] && updates[key] !== 'EMPTY_VAL' && updates[key] !== '') {
     console.log(`Adicionando nova chave ${key}...`);
     newLines.push(`${key}=${updates[key]}`);
   }
