@@ -16,12 +16,12 @@ Antes de iniciar a instalação, certifique-se de ter as seguintes informações
 
 ## 🚀 Passo a Passo da Instalação
 
-A instalação foi projetada para ser o mais automatizada possível através do script `instalador.bat`.
+A instalação foi projetada para ser o mais automatizada possível através do script **`EXECUTE_INSTALADOR.bat`**.
 
 ### Passo 1: Preparação
-1. Copie o arquivo `Gabarito_Instalador.zip` para a máquina de destino.
+1. Copie o arquivo `Gabarito.zip` para a máquina de destino.
 2. Extraia o conteúdo do `.zip` para uma pasta definitiva (ex: `C:\Administracao\Gabarito`).
-3. Clique com o botão direito no arquivo **`instalador.bat`** e escolha **"Executar como Administrador"**. *(Se não fizer isso, o script vai avisar e fechar)*.
+3. Clique com o botão direito no arquivo **`EXECUTE_INSTALADOR.bat`** e escolha **"Executar como Administrador"**. *(Se não fizer isso, o script vai avisar e fechar)*.
 
 ### Passo 2: Execução do Instalador
 O script de instalação possui 7 etapas automatizadas:
@@ -53,4 +53,4 @@ O script de instalação possui 7 etapas automatizadas:
 
 - **"O comando NPM não é reconhecido":** Se o Node.js acabou de ser instalado no Passo 1, o Windows pode ainda não ter atualizado as variáveis de ambiente. Feche o instalador e abra-o novamente como Administrador.
 - **Firebird.conf não encontrado:** O caminho digitado no Passo 4 está incorreto. Vá no Disco `C:`, procure onde o Firebird foi instalado, copie o caminho da barra de endereços do Windows e cole no terminal clicando com o botão direito.
-- **Serviço não instala:** Verifique se você executou o `instalador.bat` como Administrador no Passo 1.
+- **Serviço não instala:** Verifique se você executou o `EXECUTE_INSTALADOR.bat` como Administrador no Passo 1.
