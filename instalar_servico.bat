@@ -61,8 +61,8 @@ if %errorlevel% neq 0 (
 )
 
 "%CAMINHO_NSSM%" set "%NOME_SERVICO%" AppDirectory "%PASTA_BACKEND%"
-"%CAMINHO_NSSM%" set "%NOME_SERVICO%" DisplayName "%NOME_SERVICO% (Motor)"
-"%CAMINHO_NSSM%" set "%NOME_SERVICO%" Description "Gabarito - Sincronizacao de dados para nuvem"
+"%CAMINHO_NSSM%" set "%NOME_SERVICO%" DisplayName "%NOME_SERVICO%"
+"%CAMINHO_NSSM%" set "%NOME_SERVICO%" Description "Gabarito - Sincronizacao de dados"
 "%CAMINHO_NSSM%" set "%NOME_SERVICO%" Start SERVICE_AUTO_START
 
 echo Iniciando servico...
