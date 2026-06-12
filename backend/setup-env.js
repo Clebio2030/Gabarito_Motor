@@ -58,7 +58,7 @@ for (let i = 0; i < lines.length; i++) {
     if (Object.prototype.hasOwnProperty.call(updates, key)) {
       if (processedKeys.has(key)) continue;
       processedKeys.add(key);
-      
+
       if (updates[key] !== '') {
         console.log(`Atualizando ${key}...`);
         newLines.push(`${key}=${updates[key]}`);
