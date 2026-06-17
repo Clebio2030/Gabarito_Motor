@@ -36,16 +36,25 @@ FROM CONFIGURACAO c;
 
 /* GABARITO_FATURAMENTO_MENSAL
    Faturamento mensal agrupado por empresa, mes e ano.
-   Filtra apenas vendas com STATUS validos (1, 3, 40, 43).
+   Considera STATUS validos (1, 3, 40, 43), mas SEPARA vendas de trocas:
+     - Vendas : STATUS 1 e 3
+     - Trocas : STATUS 40 e 43
+
+   Usa agregacao condicional (SUM(CASE...)) para que cada linha (empresa/mes/ano)
+   traga os valores de venda e de troca lado a lado, sem misturar.
 
    Colunas:
-   - IDEMPRESA   : empresa no ERP
-   - SUBTOTAL    : soma dos subtotais do mes
-   - DESCONTO    : soma dos descontos do mes
-   - TOTAL       : soma dos valores totais do mes
-   - MES         : numero do mes (1-12)
-   - ANO         : ano (ex: 2026)
-   - QTD_VENDAS  : quantidade de pedidos no mes
+   - IDEMPRESA       : empresa no ERP
+   - SUBTOTAL        : soma dos subtotais de VENDA (status 1,3)
+   - DESCONTO        : soma dos descontos de VENDA (status 1,3)
+   - TOTAL           : soma dos valores totais de VENDA (status 1,3)
+   - SUBTOTAL_TROCA  : soma dos subtotais de TROCA (status 40,43)
+   - DESCONTO_TROCA  : soma dos descontos de TROCA (status 40,43)
+   - TOTAL_TROCA     : soma dos valores totais de TROCA (status 40,43)
+   - MES             : numero do mes (1-12)
+   - ANO             : ano (ex: 2026)
+   - QTD_VENDAS      : quantidade de pedidos de VENDA no mes
+   - QTD_TROCAS      : quantidade de pedidos de TROCA no mes
 
    Filtro usado pelo motor:
        WHERE IDEMPRESA = :id AND ANO = :ano
@@ -56,18 +65,26 @@ CREATE OR ALTER VIEW GABARITO_FATURAMENTO_MENSAL (
   SUBTOTAL,
   DESCONTO,
   TOTAL,
+  SUBTOTAL_TROCA,
+  DESCONTO_TROCA,
+  TOTAL_TROCA,
   MES,
   ANO,
-  QTD_VENDAS
+  QTD_VENDAS,
+  QTD_TROCAS
 ) AS
 SELECT
     se.IDEMPRESA,
-    SUM(se.SUBTOTAL)                     AS SUBTOTAL,
-    SUM(se.DESCONTO)                     AS DESCONTO,
-    SUM(se.VLTOTAL)                      AS TOTAL,
-    EXTRACT(MONTH FROM se.DTSAIDA)       AS MES,
-    EXTRACT(YEAR FROM se.DTSAIDA)        AS ANO,
-    COUNT(DISTINCT se.NRPEDIDO)          AS QTD_VENDAS
+    SUM(CASE WHEN se.STATUS IN (1, 3)   THEN se.SUBTOTAL ELSE 0 END)      AS SUBTOTAL,
+    SUM(CASE WHEN se.STATUS IN (1, 3)   THEN se.DESCONTO ELSE 0 END)      AS DESCONTO,
+    SUM(CASE WHEN se.STATUS IN (1, 3)   THEN se.VLTOTAL  ELSE 0 END)      AS TOTAL,
+    SUM(CASE WHEN se.STATUS IN (40, 43) THEN se.SUBTOTAL ELSE 0 END)      AS SUBTOTAL_TROCA,
+    SUM(CASE WHEN se.STATUS IN (40, 43) THEN se.DESCONTO ELSE 0 END)      AS DESCONTO_TROCA,
+    SUM(CASE WHEN se.STATUS IN (40, 43) THEN se.VLTOTAL  ELSE 0 END)      AS TOTAL_TROCA,
+    EXTRACT(MONTH FROM se.DTSAIDA)                                        AS MES,
+    EXTRACT(YEAR FROM se.DTSAIDA)                                         AS ANO,
+    COUNT(DISTINCT CASE WHEN se.STATUS IN (1, 3)   THEN se.NRPEDIDO END)  AS QTD_VENDAS,
+    COUNT(DISTINCT CASE WHEN se.STATUS IN (40, 43) THEN se.NRPEDIDO END)  AS QTD_TROCAS
 FROM
     saidaestoque se
 WHERE
