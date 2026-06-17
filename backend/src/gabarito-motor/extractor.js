@@ -77,11 +77,15 @@ async function extrairFaturamentoMensal(idEmpresa, ano) {
     const mes = num('MES');
     lookup[mes] = {
       mes,
-      ano:       num('ANO'),
-      subtotal:  num('SUBTOTAL'),
-      desconto:  num('DESCONTO'),
-      total:     num('TOTAL'),
-      qtdVendas: num('QTD_VENDAS')
+      ano:           num('ANO'),
+      subtotal:      num('SUBTOTAL'),
+      desconto:      num('DESCONTO'),
+      total:         num('TOTAL'),
+      subtotalTroca: num('SUBTOTAL_TROCA'),
+      descontoTroca: num('DESCONTO_TROCA'),
+      totalTroca:    num('TOTAL_TROCA'),
+      qtdVendas:     num('QTD_VENDAS'),
+      qtdTrocas:     num('QTD_TROCAS')
     };
   }
 
@@ -96,10 +100,14 @@ async function extrairFaturamentoMensal(idEmpresa, ano) {
     resultado.push(lookup[mes] || {
       mes,
       ano,
-      subtotal:  0,
-      desconto:  0,
-      total:     0,
-      qtdVendas: 0
+      subtotal:      0,
+      desconto:      0,
+      total:         0,
+      subtotalTroca: 0,
+      descontoTroca: 0,
+      totalTroca:    0,
+      qtdVendas:     0,
+      qtdTrocas:     0
     });
   }
 
