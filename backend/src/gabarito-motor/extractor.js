@@ -499,6 +499,54 @@ async function extrairVendedores(idEmpresa, desde) {
   });
 }
 
+// Passo 9: Extrair Pedidos por Horario
+
+/**
+ * Busca os pedidos faturados detalhados por horario de um IDEMPRESA.
+ * A view filtra status validos (1, 3); o motor filtra DTSAIDA >= desde
+ * (mesma janela da curva/entradas/vendedores).
+ *
+ * @param {number} idEmpresa
+ * @param {string} desde  YYYY-MM-DD
+ * @returns {Promise<Array>}
+ */
+async function extrairPedidosPorHorario(idEmpresa, desde) {
+  let rows = [];
+  try {
+    rows = await query(
+      `SELECT * FROM GABARITO_HORARIO WHERE IDEMPRESA = ? AND DTSAIDA >= ? ORDER BY DTSAIDA`,
+      [idEmpresa, new Date(desde)]
+    );
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar GABARITO_HORARIO (IDEMPRESA=${idEmpresa}):`, err);
+  }
+
+  return (rows || []).map((row) => {
+    const str = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
+      return fixEncoding(v).trim();
+    };
+    const num = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
+      return toNumber(v);
+    };
+    const dt = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
+      return v instanceof Date ? v.toISOString() : (v || null);
+    };
+
+    return {
+      idEmpresa:   num('IDEMPRESA'),
+      nomeEmpresa: str('NOMEEMPRESA'),
+      dtSaida:     dt('DTSAIDA'),
+      horario:     str('HORARIO'),
+      hora:        num('HORA'),
+      valorPedido: num('VALORPEDIDO'),
+      nrPedido:    num('NRPEDIDO')
+    };
+  });
+}
+
 // ── Streaming Curva ABC (Full Sync) ───────────────────────────────────────────
 
 /**
@@ -675,5 +723,6 @@ module.exports = {
   extrairCurvaAbc,
   extrairCurvaAbcStreaming,
   extrairEntradas,
-  extrairVendedores
+  extrairVendedores,
+  extrairPedidosPorHorario
 };
