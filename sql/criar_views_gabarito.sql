@@ -436,6 +436,108 @@ FROM ENTRPRODUTO A
 WHERE B.STATUS = 1;
 
 
+/* GABARITO_VENDEDORES
+   Desempenho diario por vendedor (uma linha por empresa/vendedor/dia).
+   Considera STATUS validos (1, 3, 40, 43), separando vendas de trocas.
+   Vendas/faturamento contam apenas status 1 e 3; trocas, status 40 e 43.
+
+   Colunas:
+   - IDEMPRESA          : empresa no ERP
+   - CDVENDEDOR         : codigo do vendedor
+   - NOME_VEND          : nome do vendedor
+   - DATA_VENDA         : dia da venda (DATE)
+   - TOTAL_VENDAS       : soma do valor total de vendas no dia (status 1 e 3)
+   - TOTAL_PEDIDOS      : pedidos unicos faturados no dia (status 1 e 3)
+   - CLIENTES_ATENDIDOS : clientes unicos atendidos no dia (status 1 e 3)
+   - TICKET_MEDIO       : ticket medio do dia (total vendas / nr. de pedidos faturados)
+   - TOTAL_DESCONTO     : desconto total no dia (status 1 e 3)
+   - TOTAL_TROCAS       : valor total de trocas no dia (status 40 e 43)
+   - QTD_TROCAS         : qtd de pedidos de troca no dia (status 40 e 43)
+   - QTD_PRODUTOS       : qtd de itens vendidos no dia (exclui itens cancelados)
+   - TOTAL_CUSTO        : custo total dos itens vendidos no dia
+
+   Filtro usado pelo motor:
+       WHERE IDEMPRESA = :id AND DATA_VENDA >= :desde
+   ------------------------------------------------------------------ */
+
+CREATE OR ALTER VIEW GABARITO_VENDEDORES(
+    IDEMPRESA,
+    CDVENDEDOR,
+    NOME_VEND,
+    DATA_VENDA,
+    TOTAL_VENDAS,
+    TOTAL_PEDIDOS,
+    CLIENTES_ATENDIDOS,
+    TICKET_MEDIO,
+    TOTAL_DESCONTO,
+    TOTAL_TROCAS,
+    QTD_TROCAS,
+    QTD_PRODUTOS,
+    TOTAL_CUSTO)
+AS
+SELECT 
+    se.idempresa,
+    V.CDVENDEDOR,
+    V.VENDEDOR AS NOME_VEND,
+    
+    -- A data exata da venda:
+    CAST(se.dtsaida AS DATE) AS DATA_VENDA,
+
+    -- Soma do valor total no dia (Apenas faturamento real: status 1 e 3)
+    SUM(CASE WHEN se.status IN (1, 3) THEN se.vltotal ELSE 0 END) AS TOTAL_VENDAS,
+
+    -- Total de pedidos únicos faturados no dia (Apenas status 1 e 3)
+    COUNT(DISTINCT CASE WHEN se.status IN (1, 3) THEN se.nrpedido END) AS TOTAL_PEDIDOS,
+
+    -- Quantidade de atendimentos únicos no dia (Apenas status 1 e 3)
+    COUNT(DISTINCT CASE WHEN se.status IN (1, 3) THEN se.cdcliente END)  AS CLIENTES_ATENDIDOS,
+
+    -- Ticket Médio baseado apenas nos pedidos válidos (status 1 e 3)
+    CASE 
+        WHEN COUNT(DISTINCT CASE WHEN se.status IN (1, 3) THEN se.nrpedido END) > 0 
+        THEN SUM(CASE WHEN se.status IN (1, 3) THEN se.vltotal ELSE 0 END) / COUNT(DISTINCT CASE WHEN se.status IN (1, 3) THEN se.nrpedido END)
+        ELSE 0
+    END AS TICKET_MEDIO,
+    -- Desconto Total do dia (Somente em vendas com status 1 e 3)
+    SUM(CASE WHEN se.status IN (1, 3) THEN COALESCE(se.desconto, 0) ELSE 0 END) AS TOTAL_DESCONTO,
+
+    -- Trocas do dia (Valor total em R$ - Somente status 40 e 43)
+    SUM(CASE WHEN se.status IN (40, 43) THEN se.vltotal ELSE 0 END) AS TOTAL_TROCAS,
+
+    -- Quantidade de trocas realizadas no dia (Contagem de pedidos com status de troca)
+    COUNT(DISTINCT CASE WHEN se.status IN (40, 43) THEN se.nrpedido END) AS QTD_TROCAS,
+
+    -- Quantidade de produtos vendidos no dia
+    SUM(COALESCE(sp.total_itens, 0)) AS QTD_PRODUTOS,
+
+    SUM(COALESCE(sp.custo_total_pedido, 0)) AS TOTAL_CUSTO
+
+FROM saidaestoque se
+JOIN VENDEDOR V 
+    ON V.CDVENDEDOR = SE.CDVENDEDOR
+-- Subquery de produtos por empresa, filtrando os itens cancelados (statusse = 9)
+LEFT JOIN (
+    SELECT
+        idempresa,
+        nrpedido,
+        SUM(qtdproduto) AS total_itens,
+        SUM(COALESCE(vlcusto, 0) * qtdproduto) AS custo_total_pedido
+    FROM saidaproduto
+    WHERE statusse <> 9
+    GROUP BY idempresa, nrpedido
+) sp 
+    ON sp.nrpedido = se.nrpedido 
+   AND sp.idempresa = se.idempresa
+WHERE 
+    se.status IN (1, 3, 40, 43)
+    AND V.inativo = 0 
+GROUP BY 
+    se.idempresa,
+    V.CDVENDEDOR,
+    V.VENDEDOR,
+    CAST(se.dtsaida AS DATE);
+
+
 /* Confirmacao */
-SELECT 'Views criadas: GABARITO_EMPRESAS, GABARITO_FATURAMENTO_MENSAL, GABARITO_CTAPAGAR_GERAL, GABARITO_CTARCEBER_GERAL, GABARITO_CURVA_ABC, GABARITO_ENTRADAS' AS RESULTADO
+SELECT 'Views criadas: GABARITO_EMPRESAS, GABARITO_FATURAMENTO_MENSAL, GABARITO_CTAPAGAR_GERAL, GABARITO_CTARCEBER_GERAL, GABARITO_CURVA_ABC, GABARITO_ENTRADAS, GABARITO_VENDEDORES' AS RESULTADO
 FROM RDB$DATABASE;
