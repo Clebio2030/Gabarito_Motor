@@ -538,6 +538,47 @@ GROUP BY
     CAST(se.dtsaida AS DATE);
 
 
+/* GABARITO_HORARIO
+   Pedidos faturados detalhados por horario (uma linha por pedido).
+   Permite analisar a distribuicao de vendas ao longo do dia/horas.
+   Considera apenas vendas reais (STATUS 1 e 3).
+
+   Colunas:
+   - IDEMPRESA    : empresa no ERP
+   - NOMEEMPRESA  : nome da empresa (CONFIGURACAO)
+   - DTSAIDA      : data/hora de saida do pedido
+   - HORARIO      : horario do pedido (HH:MM:SS, extraido de HORAPED)
+   - HORA         : hora cheia do pedido (0-23)
+   - VALORPEDIDO  : valor total do pedido (VLTOTAL)
+   - NRPEDIDO     : numero do pedido
+
+   Filtro usado pelo motor:
+       WHERE IDEMPRESA = :id AND DTSAIDA >= :desde
+   ------------------------------------------------------------------ */
+
+CREATE OR ALTER VIEW GABARITO_HORARIO (
+    IDEMPRESA,
+    NOMEEMPRESA,
+    DTSAIDA,
+    HORARIO,
+    HORA,
+    VALORPEDIDO,
+    NRPEDIDO
+) AS
+SELECT
+    SE.IDEMPRESA,
+    C.NOMEEMPRESA,
+    SE.DTSAIDA,
+    SUBSTRING(SE.HORAPED FROM 12 FOR 8)  AS HORARIO,
+    EXTRACT(HOUR FROM SE.HORAPED)        AS HORA,
+    SE.VLTOTAL                           AS VALORPEDIDO,
+    SE.NRPEDIDO
+FROM SAIDAESTOQUE SE
+    JOIN CONFIGURACAO C ON (SE.IDEMPRESA = C.IDEMPRESA)
+WHERE
+    SE.STATUS IN (1, 3);
+
+
 /* Confirmacao */
-SELECT 'Views criadas: GABARITO_EMPRESAS, GABARITO_FATURAMENTO_MENSAL, GABARITO_CTAPAGAR_GERAL, GABARITO_CTARCEBER_GERAL, GABARITO_CURVA_ABC, GABARITO_ENTRADAS, GABARITO_VENDEDORES' AS RESULTADO
+SELECT 'Views criadas: GABARITO_EMPRESAS, GABARITO_FATURAMENTO_MENSAL, GABARITO_CTAPAGAR_GERAL, GABARITO_CTARCEBER_GERAL, GABARITO_CURVA_ABC, GABARITO_ENTRADAS, GABARITO_VENDEDORES, GABARITO_HORARIO' AS RESULTADO
 FROM RDB$DATABASE;
