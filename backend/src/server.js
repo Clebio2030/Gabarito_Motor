@@ -14,6 +14,7 @@ const {
 } = require('./configService');
 const { executarConsulta, getDBOptions } = require('./db');
 const { logInfo, logError } = require('./logger');
+const { ensureUpdaterSchedule } = require('./ensureUpdaterSchedule');
 
 // ── Gabarito Motor ─────────────────────────────────────────────────────────────
 require('./gabarito-motor');
@@ -165,4 +166,12 @@ app.listen(PORT, () => {
   logInfo('================================================');
   logInfo(`  Gabarito Backend rodando em http://localhost:${PORT}`);
   logInfo('================================================');
+
+  // Garante que a tarefa agendada do updater exista nos horarios desejados.
+  // Roda em background e nunca derruba o servico em caso de falha.
+  try {
+    ensureUpdaterSchedule();
+  } catch (err) {
+    logError('Falha ao garantir agendamento do updater', err);
+  }
 });

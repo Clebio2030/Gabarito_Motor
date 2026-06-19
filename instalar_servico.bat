@@ -26,7 +26,9 @@ set "PASTA_PROJETO=%BASE_DIR%"
 set "PASTA_BACKEND=%BASE_DIR%\backend"
 set "SCRIPT_BACKEND=src\server.js"
 set "SCRIPT_UPDATER=%BASE_DIR%\updater\updater.js"
-set "HORA_ATUALIZADOR=19:00"
+rem Horarios de checagem de update (manha e fim de tarde)
+set "HORA_ATUALIZADOR_1=08:00"
+set "HORA_ATUALIZADOR_2=19:00"
 
 rem Caminho do NSSM
 set "CAMINHO_NSSM=%BASE_DIR%\nssm\win64\nssm.exe"
@@ -75,11 +77,11 @@ echo ==================================================
 if exist "%SCRIPT_UPDATER%" (
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
         "$action   = New-ScheduledTaskAction -Execute '\"%CAMINHO_NODE%\"' -Argument '\"%SCRIPT_UPDATER%\"';" ^
-        "$trigger  = New-ScheduledTaskTrigger -Daily -At '%HORA_ATUALIZADOR%';" ^
+        "$triggers = @((New-ScheduledTaskTrigger -Daily -At '%HORA_ATUALIZADOR_1%'), (New-ScheduledTaskTrigger -Daily -At '%HORA_ATUALIZADOR_2%'));" ^
         "$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;" ^
         "$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest;" ^
-        "Register-ScheduledTask -TaskName '%NOME_TAREFA%' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null;" ^
-        "Write-Host 'Tarefa agendada criada com sucesso.'"
+        "Register-ScheduledTask -TaskName '%NOME_TAREFA%' -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Force | Out-Null;" ^
+        "Write-Host 'Tarefa agendada criada com sucesso (08:00 e 19:00).'"
 ) else (
     echo [AVISO] Arquivo do updater nao encontrado em: %SCRIPT_UPDATER%
 )
