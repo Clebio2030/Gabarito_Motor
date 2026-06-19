@@ -18,7 +18,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.e
 const cron = require('node-cron');
 const { logInfo, logWarn, logError } = require('../logger');
 const { buscarCnpjsAtivos, enviarSync } = require('./sender');
-const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas } = require('./extractor');
+const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores } = require('./extractor');
 const { checkStateChanged, getLastSyncedAt, updateState } = require('./syncState');
 
 const CHUNK_SIZE = 5000;
@@ -90,10 +90,13 @@ async function runMotor() {
       const { rows: curvaAbcTotal, completo: curvaAbcCompleta } = await extrairCurvaAbc(idEmpresa, desde);
       logInfo(`[Gabarito] [${cnpj}] Extraindo entradas de estoque (desde ${desde})...`);
       const entradasTotal      = await extrairEntradas(idEmpresa, desde);
-      logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}`);
+      logInfo(`[Gabarito] [${cnpj}] Extraindo desempenho de vendedores (desde ${desde})...`);
+      const vendedoresTotal    = await extrairVendedores(idEmpresa, desde);
+      logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}`);
 
       const temDados = faturamentoMensal.length > 0 || contasPagarTotal.length > 0
-        || contasReceberTotal.length > 0 || curvaAbcTotal.length > 0 || entradasTotal.length > 0;
+        || contasReceberTotal.length > 0 || curvaAbcTotal.length > 0 || entradasTotal.length > 0
+        || vendedoresTotal.length > 0;
 
       if (!temDados) {
         logWarn(`[Gabarito] CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) sem dados em ${anoCorrente}.`);
@@ -103,13 +106,13 @@ async function runMotor() {
           sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
           syncMode: modoSync,
           desde,
-          registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [], entradas: [] }]
+          registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [], entradas: [], vendedores: [] }]
         });
         processados++;
         continue;
       }
 
-      const dadosCompletos = { faturamentoMensal, contasPagar: contasPagarTotal, contasReceber: contasReceberTotal, curvaAbc: curvaAbcTotal, entradas: entradasTotal };
+      const dadosCompletos = { faturamentoMensal, contasPagar: contasPagarTotal, contasReceber: contasReceberTotal, curvaAbc: curvaAbcTotal, entradas: entradasTotal, vendedores: vendedoresTotal };
       const { changed, hash } = checkStateChanged(cnpj, dadosCompletos);
 
       if (!changed) {
@@ -118,14 +121,15 @@ async function runMotor() {
         continue;
       }
 
-      logInfo(`[Gabarito] CNPJ ${cnpj}: faturamento=${faturamentoMensal.length}, ctaPagar=${contasPagarTotal.length}, ctaReceber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}`);
+      logInfo(`[Gabarito] CNPJ ${cnpj}: faturamento=${faturamentoMensal.length}, ctaPagar=${contasPagarTotal.length}, ctaReceber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}`);
 
       const maxChunks = Math.max(
         1,
         Math.ceil(contasPagarTotal.length   / CHUNK_SIZE),
         Math.ceil(contasReceberTotal.length / CHUNK_SIZE),
         Math.ceil(curvaAbcTotal.length      / CHUNK_SIZE),
-        Math.ceil(entradasTotal.length      / CHUNK_SIZE)
+        Math.ceil(entradasTotal.length      / CHUNK_SIZE),
+        Math.ceil(vendedoresTotal.length    / CHUNK_SIZE)
       );
 
       let todosSucesso = true;
@@ -135,6 +139,7 @@ async function runMotor() {
         const crChunk = contasReceberTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
         const caChunk = curvaAbcTotal.slice(i * CHUNK_SIZE,      (i + 1) * CHUNK_SIZE);
         const enChunk = entradasTotal.slice(i * CHUNK_SIZE,      (i + 1) * CHUNK_SIZE);
+        const veChunk = vendedoresTotal.slice(i * CHUNK_SIZE,    (i + 1) * CHUNK_SIZE);
         const fmChunk = (i === 0) ? faturamentoMensal : [];
 
         const registro = { cnpj };
@@ -143,6 +148,7 @@ async function runMotor() {
         if (crChunk.length > 0)  registro.contasReceber     = crChunk;
         if (caChunk.length > 0)  registro.curvaAbc          = caChunk;
         if (enChunk.length > 0)  registro.entradas          = enChunk;
+        if (veChunk.length > 0)  registro.vendedores        = veChunk;
 
         const payload = {
           dataReferencia,
@@ -211,20 +217,23 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
   let   contasPagarTotal   = await extrairContasPagar(idEmpresa);
   let   contasReceberTotal = await extrairContasReceber(idEmpresa);
   let   entradasTotal      = await extrairEntradas(idEmpresa, desde);
+  let   vendedoresTotal    = await extrairVendedores(idEmpresa, desde);
 
   const baseChunks = Math.max(
     1,
     Math.ceil(contasPagarTotal.length   / CHUNK_SIZE),
     Math.ceil(contasReceberTotal.length / CHUNK_SIZE),
-    Math.ceil(entradasTotal.length      / CHUNK_SIZE)
+    Math.ceil(entradasTotal.length      / CHUNK_SIZE),
+    Math.ceil(vendedoresTotal.length    / CHUNK_SIZE)
   );
 
-  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length} (${baseChunks} lote(s))`);
+  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length} (${baseChunks} lote(s))`);
 
   for (let i = 0; i < baseChunks; i++) {
     const cpChunk = contasPagarTotal.slice(i * CHUNK_SIZE,   (i + 1) * CHUNK_SIZE);
     const crChunk = contasReceberTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
     const enChunk = entradasTotal.slice(i * CHUNK_SIZE,      (i + 1) * CHUNK_SIZE);
+    const veChunk = vendedoresTotal.slice(i * CHUNK_SIZE,    (i + 1) * CHUNK_SIZE);
     const fmChunk = (i === 0) ? faturamentoMensal : [];
 
     const registro = { cnpj };
@@ -232,6 +241,7 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
     if (cpChunk.length > 0) registro.contasPagar       = cpChunk;
     if (crChunk.length > 0) registro.contasReceber     = crChunk;
     if (enChunk.length > 0) registro.entradas          = enChunk;
+    if (veChunk.length > 0) registro.vendedores        = veChunk;
 
     logInfo(`[Gabarito] [${cnpj}] (full) Enviando base ${i + 1}/${baseChunks}...`);
     const ok = await enviarSync({
@@ -245,7 +255,7 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
   }
 
   // Libera os arrays base antes do streaming da curva (reduz pico de memória)
-  contasPagarTotal = contasReceberTotal = entradasTotal = null;
+  contasPagarTotal = contasReceberTotal = entradasTotal = vendedoresTotal = null;
 
   // 2) Curva ABC em streaming, um ano por vez
   await extrairCurvaAbcStreaming(idEmpresa, desde, async ({ ano, anoDesde, rows, completo: anoCompleto }) => {

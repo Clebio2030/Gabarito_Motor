@@ -445,6 +445,60 @@ async function extrairEntradas(idEmpresa, desde) {
   });
 }
 
+// Passo 8: Extrair Desempenho de Vendedores
+
+/**
+ * Busca o desempenho diario por vendedor de um IDEMPRESA.
+ * A view ja agrega por empresa/vendedor/dia e filtra status validos.
+ * Filtra por DATA_VENDA >= desde (mesma janela da curva/entradas).
+ *
+ * @param {number} idEmpresa
+ * @param {string} desde  YYYY-MM-DD
+ * @returns {Promise<Array>}
+ */
+async function extrairVendedores(idEmpresa, desde) {
+  let rows = [];
+  try {
+    rows = await query(
+      `SELECT * FROM GABARITO_VENDEDORES WHERE IDEMPRESA = ? AND DATA_VENDA >= ? ORDER BY DATA_VENDA`,
+      [idEmpresa, new Date(desde)]
+    );
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar GABARITO_VENDEDORES (IDEMPRESA=${idEmpresa}):`, err);
+  }
+
+  return (rows || []).map((row) => {
+    const str = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
+      return fixEncoding(v).trim();
+    };
+    const num = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
+      return toNumber(v);
+    };
+    const dt = (campo) => {
+      const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
+      return v instanceof Date ? v.toISOString() : (v || null);
+    };
+
+    return {
+      idEmpresa:         num('IDEMPRESA'),
+      cdVendedor:        num('CDVENDEDOR'),
+      nomeVend:          str('NOME_VEND'),
+      dataVenda:         dt('DATA_VENDA'),
+      totalVendas:       num('TOTAL_VENDAS'),
+      totalPedidos:      num('TOTAL_PEDIDOS'),
+      clientesAtendidos: num('CLIENTES_ATENDIDOS'),
+      ticketMedio:       num('TICKET_MEDIO'),
+      totalDesconto:     num('TOTAL_DESCONTO'),
+      totalTrocas:       num('TOTAL_TROCAS'),
+      qtdTrocas:         num('QTD_TROCAS'),
+      qtdProdutos:       num('QTD_PRODUTOS'),
+      totalCusto:        num('TOTAL_CUSTO')
+    };
+  });
+}
+
 // ── Streaming Curva ABC (Full Sync) ───────────────────────────────────────────
 
 /**
@@ -620,5 +674,6 @@ module.exports = {
   extrairContasReceber,
   extrairCurvaAbc,
   extrairCurvaAbcStreaming,
-  extrairEntradas
+  extrairEntradas,
+  extrairVendedores
 };
