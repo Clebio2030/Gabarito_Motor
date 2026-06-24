@@ -21,7 +21,6 @@
     "backend/sync_state.json",
     "backend/logs",
     "backend/node_modules",
-    "updater",
     ".git"
   ],
   "checkIntervalHours": 24

@@ -20,6 +20,7 @@ const { logInfo, logWarn, logError } = require('../logger');
 const { buscarCnpjsAtivos, enviarSync } = require('./sender');
 const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario } = require('./extractor');
 const { checkStateChanged, getLastSyncedAt, updateState } = require('./syncState');
+const { runDatabaseMigrations } = require('./migrations');
 
 const CHUNK_SIZE = 5000;
 
@@ -336,5 +337,8 @@ logInfo(`[Gabarito] Motor registrado — cron: ${CRON_EXPR} (modo: ${process.env
 
 if (process.env.GABARITO_RUN_ON_START === 'true') {
   logInfo('[Gabarito] GABARITO_RUN_ON_START=true — executando agora...');
-  runMotor();
+  runDatabaseMigrations().then(() => runMotor());
 }
+
+// Para o cron também, garantimos que rodou uma vez no boot
+runDatabaseMigrations();

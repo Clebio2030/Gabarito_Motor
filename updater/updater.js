@@ -1,4 +1,4 @@
-﻿const fs = require('fs');
+const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
@@ -384,10 +384,10 @@ function runViewsSql(projectRoot) {
 
   const output = `${result.stdout || ''}\n${result.stderr || ''}`;
   if (result.status !== 0 || !/Views criadas/i.test(output)) {
-    throw new Error(`Falha ao aplicar SQL das views. Saída: ${output}`);
+    warn(`Falha ao aplicar SQL das views (isql exit code: ${result.status}). O motor tentara aplicar no boot. Saída: ${output}`);
+  } else {
+    log('Views aplicadas com sucesso.');
   }
-
-  log('Views aplicadas com sucesso.');
 }
 
 function serviceExists(serviceName) {
