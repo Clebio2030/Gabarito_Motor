@@ -9,7 +9,7 @@
 const firebird = require('node-firebird');
 
 const POOL_SIZE      = parseInt(process.env.FB_POOL_SIZE    || '3',     10);
-const QUERY_TIMEOUT_MS = parseInt(process.env.FB_QUERY_TIMEOUT || '90000', 10);
+const QUERY_TIMEOUT_MS = parseInt(process.env.FB_QUERY_TIMEOUT || '300000', 10);
 
 function getOptions() {
   return {
