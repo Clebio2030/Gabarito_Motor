@@ -6,7 +6,7 @@
 //   2. Cruza com Firebird -> obtem IDEMPRESA de cada CNPJ
 //   3. Extrai dados do ERP (faturamento, contas, curva ABC, entradas)
 //      - Primeira execução por CNPJ: janela de 3 anos (carga inicial)
-//      - Execuções seguintes: janela de 2 meses (início do mês retrasado)
+//      - Execuções seguintes: janela de 3 meses (início de 3 meses atrás)
 //        para capturar novos registros e retroativos recentes
 //   4. Envia via POST /sync se houver mudança (hash-based dedup)
 //
@@ -109,6 +109,7 @@ async function runMotor() {
           sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
           syncMode: modoSync,
           desde,
+          chunkInfo: { atual: 1, total: 1 },
           registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [], entradas: [], vendedores: [], pedidosHorario: [] }]
         });
         processados++;
@@ -297,7 +298,7 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
 /**
  * Calcula a data de início da janela de extração.
  * - Sem sync anterior (null): 3 anos atrás (carga inicial completa)
- * - Com sync anterior: 1º dia do mês retrasado (captura retroativos recentes)
+ * - Com sync anterior: 1º dia de 3 meses atrás (captura retroativos recentes)
  */
 function computarDesde(lastSyncedAt) {
   if (!lastSyncedAt) {
@@ -308,7 +309,7 @@ function computarDesde(lastSyncedAt) {
   }
   const d = new Date();
   d.setDate(1);
-  d.setMonth(d.getMonth() - 2);
+  d.setMonth(d.getMonth() - 3);
   d.setHours(0, 0, 0, 0);
   return d.toISOString().slice(0, 10);
 }
