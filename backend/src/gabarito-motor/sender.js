@@ -84,9 +84,11 @@ async function buscarCnpjsAtivos() {
 /**
  * Envia o payload de sincronização com retry inteligente.
  * Respeita retry_after do Cloudflare quando presente.
- * Retorna true se enviou com sucesso, false em falha definitiva.
+ * Retorna { ok, persisted } — ok=false em falha definitiva. `persisted` traz a
+ * contagem que a API confirmou ter gravado por recurso (quando disponível), usada
+ * para a verificação de integridade fim-a-fim da Fase 1.
  * @param {object} payload
- * @returns {Promise<boolean>}
+ * @returns {Promise<{ ok: boolean, persisted?: object }>}
  */
 async function enviarSync(payload) {
   const url = process.env.GABARITO_API_URL ||
@@ -100,7 +102,7 @@ async function enviarSync(payload) {
       });
 
       logInfo(`[Gabarito] POST /sync respondeu ${response.status} — OK.`);
-      return true;
+      return { ok: true, persisted: response.data?.persisted };
 
     } catch (err) {
       const status = err.response?.status;
@@ -121,10 +123,10 @@ async function enviarSync(payload) {
 
       const detalhe = err.response ? `HTTP ${status}: ${JSON.stringify(err.response.data)}` : err.message;
       logError(`[Gabarito] Falha definitiva no POST /sync (tentativa ${tentativa}/${RETRY_ATTEMPTS}): ${detalhe}`);
-      return false;
+      return { ok: false };
     }
   }
-  return false;
+  return { ok: false };
 }
 
 module.exports = { buscarCnpjsAtivos, enviarSync };

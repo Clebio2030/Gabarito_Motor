@@ -16,6 +16,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
 
 const cron = require('node-cron');
+const crypto = require('crypto');
 const { logInfo, logWarn, logError } = require('../logger');
 const { buscarCnpjsAtivos, enviarSync } = require('./sender');
 const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario } = require('./extractor');
@@ -24,7 +25,110 @@ const { runDatabaseMigrations } = require('./migrations');
 
 const CHUNK_SIZE = 5000;
 
+// Fase 1 (entrega íntegra): quando true, cada recurso STAGINGÁVEL leva
+// `expectedTotal`+`snapshotId` no payload e o Motor faz fail-fast + valida a
+// contagem `persisted` devolvida pela API (staging + swap verificado). Off =
+// comportamento legado byte-a-byte. Ver docs/spec-entrega-integra-fluxo-caixa.md
+const SEND_EXPECTED_TOTAL = process.env.GABARITO_EXPECTED_TOTAL === 'true';
+
+// Recursos que a API materializa via staging+swap (têm tabela em sync_staging.*).
+// faturamentoMensal fica DE FORA — a API não faz staging dele e rejeitaria o
+// payload com 400 multi_resource_payload; ele segue sempre pelo caminho legado.
+const RECURSOS_STAGING = new Set([
+  'contasPagar', 'contasReceber', 'curvaAbc', 'entradas', 'vendedores', 'pedidosHorario'
+]);
+
 let isMotorRunning = false;
+
+/**
+ * Envia UM recurso (ex.: contasPagar) como seu próprio stream de lotes, com
+ * chunkInfo honesto: { atual, total } onde `total` é o nº de lotes DESSE recurso.
+ *
+ * Cada recurso vai num POST isolado (só o seu campo no registro). A guarda
+ * `chunkInfo.atual === 1` da API apaga o snapshot apenas daquela tabela e os
+ * lotes seguintes fazem append — então todo recurso fecha em `atual === total`,
+ * independente de qual tabela é a maior do CNPJ.
+ *
+ * Isso substitui o antigo chunkInfo global (derivado do max entre as tabelas),
+ * que era desonesto para qualquer tabela menor que a maior: o stream dela
+ * terminava em ex. 8/79 e nunca sinalizava conclusão, truncando o snapshot.
+ *
+ * Recursos vazios são pulados (mantém o comportamento anterior, que omitia o
+ * campo quando não havia linhas).
+ *
+ * Fase 1 (SEND_EXPECTED_TOTAL=true): gera um `snapshotId` (uuid v4) único por
+ * entrega de (cnpj, recurso) e o repete em todos os lotes; inclui `expectedTotal`
+ * (congelado no início — não muda no meio do stream); envia em ordem estrita
+ * (lote N+1 só após 200 em N); faz fail-fast ao primeiro lote que falhar; e, no
+ * último lote, valida a contagem `persisted` devolvida pela API. Cada POST carrega
+ * exatamente UM recurso × UM cnpj (constraint do contrato de staging). Com a flag
+ * off, comportamento legado intacto.
+ *
+ * @param {string}  cnpj
+ * @param {object}  baseMeta  metadados comuns (dataReferencia, sourceVersion, syncMode, desde?)
+ * @param {string}  nomeCampo nome do campo no registro (ex.: 'contasPagar')
+ * @param {Array}   registros array completo do recurso
+ * @param {Function} sendFn   injeção do enviador (default: enviarSync) — facilita teste
+ * @returns {Promise<boolean>} true se todos os lotes do recurso enviaram OK
+ */
+async function enviarRecurso(cnpj, baseMeta, nomeCampo, registros, sendFn = enviarSync) {
+  const lista = registros || [];
+  if (lista.length === 0) return true;
+
+  const usaStaging = SEND_EXPECTED_TOTAL && RECURSOS_STAGING.has(nomeCampo);
+  const expectedTotal = lista.length;            // congelado para toda a entrega
+  const total = Math.ceil(expectedTotal / CHUNK_SIZE);
+  const snapshotId = usaStaging ? crypto.randomUUID() : null;
+  let ok = true;
+
+  for (let i = 0; i < total; i++) {
+    const chunk = lista.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+
+    if (total > 1) {
+      logInfo(`[Gabarito] [${cnpj}] Enviando ${nomeCampo} lote ${i + 1}/${total}...`);
+    }
+
+    const payload = {
+      ...baseMeta,
+      chunkInfo: { atual: i + 1, total },
+      registros: [{ cnpj, [nomeCampo]: chunk }]
+    };
+    if (usaStaging) {
+      payload.expectedTotal = expectedTotal;
+      payload.snapshotId    = snapshotId;
+    }
+
+    const resp = await sendFn(payload);
+
+    if (!resp.ok) {
+      ok = false;
+      if (usaStaging) {
+        // Fail-fast: não adianta empurrar mais lotes para um stream que não vai
+        // dar swap. Aborta o recurso; o hash não será salvo e tudo é reenviado
+        // (com um snapshotId novo no próximo ciclo, resetando o staging na API).
+        logWarn(`[Gabarito] [${cnpj}] ${nomeCampo}: lote ${i + 1}/${total} falhou — abortando recurso (snapshot ${snapshotId}).`);
+        return false;
+      }
+      continue; // legado: segue tentando os demais lotes
+    }
+
+    // Verificação de integridade fim-a-fim: no último lote a API devolve quanto
+    // gravou de fato após o swap. Divergência = recurso truncou → não salva hash.
+    if (usaStaging && i + 1 === total) {
+      const p = resp.persisted?.[nomeCampo];
+      if (p?.total != null && p.total !== expectedTotal) {
+        logError(`[Gabarito] [${cnpj}] ${nomeCampo}: API gravou ${p.total}, esperado ${expectedTotal} — recurso truncado (snapshot ${snapshotId}).`);
+        return false;
+      }
+      if (p) {
+        const delta = (p.previousTotal != null) ? ` (antes: ${p.previousTotal})` : '';
+        logInfo(`[Gabarito] [${cnpj}] ${nomeCampo}: ${p.total} linhas confirmadas pela API${delta}.`);
+      }
+    }
+  }
+
+  return ok;
+}
 
 async function runMotor() {
   if (isMotorRunning) {
@@ -127,50 +231,29 @@ async function runMotor() {
 
       logInfo(`[Gabarito] CNPJ ${cnpj}: faturamento=${faturamentoMensal.length}, ctaPagar=${contasPagarTotal.length}, ctaReceber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}`);
 
-      const maxChunks = Math.max(
-        1,
-        Math.ceil(contasPagarTotal.length     / CHUNK_SIZE),
-        Math.ceil(contasReceberTotal.length   / CHUNK_SIZE),
-        Math.ceil(curvaAbcTotal.length        / CHUNK_SIZE),
-        Math.ceil(entradasTotal.length        / CHUNK_SIZE),
-        Math.ceil(vendedoresTotal.length      / CHUNK_SIZE),
-        Math.ceil(pedidosHorarioTotal.length  / CHUNK_SIZE)
-      );
+      // Cada recurso é enviado como seu próprio stream de lotes (chunkInfo
+      // honesto por tabela). Ver enviarRecurso() — substitui o antigo chunkInfo
+      // global que truncava qualquer tabela que não fosse a maior do CNPJ.
+      const baseMeta = {
+        dataReferencia,
+        sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
+        syncMode: modoSync,
+        desde
+      };
+
+      const recursos = [
+        ['faturamentoMensal', faturamentoMensal],
+        ['contasPagar',       contasPagarTotal],
+        ['contasReceber',     contasReceberTotal],
+        ['curvaAbc',          curvaAbcTotal],
+        ['entradas',          entradasTotal],
+        ['vendedores',        vendedoresTotal],
+        ['pedidosHorario',    pedidosHorarioTotal]
+      ];
 
       let todosSucesso = true;
-
-      for (let i = 0; i < maxChunks; i++) {
-        const cpChunk = contasPagarTotal.slice(i * CHUNK_SIZE,    (i + 1) * CHUNK_SIZE);
-        const crChunk = contasReceberTotal.slice(i * CHUNK_SIZE,  (i + 1) * CHUNK_SIZE);
-        const caChunk = curvaAbcTotal.slice(i * CHUNK_SIZE,       (i + 1) * CHUNK_SIZE);
-        const enChunk = entradasTotal.slice(i * CHUNK_SIZE,       (i + 1) * CHUNK_SIZE);
-        const veChunk = vendedoresTotal.slice(i * CHUNK_SIZE,     (i + 1) * CHUNK_SIZE);
-        const phChunk = pedidosHorarioTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        const fmChunk = (i === 0) ? faturamentoMensal : [];
-
-        const registro = { cnpj };
-        if (fmChunk.length > 0)  registro.faturamentoMensal = fmChunk;
-        if (cpChunk.length > 0)  registro.contasPagar       = cpChunk;
-        if (crChunk.length > 0)  registro.contasReceber     = crChunk;
-        if (caChunk.length > 0)  registro.curvaAbc          = caChunk;
-        if (enChunk.length > 0)  registro.entradas          = enChunk;
-        if (veChunk.length > 0)  registro.vendedores        = veChunk;
-        if (phChunk.length > 0)  registro.pedidosHorario    = phChunk;
-
-        const payload = {
-          dataReferencia,
-          sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
-          syncMode: modoSync,
-          desde,
-          chunkInfo: { atual: i + 1, total: maxChunks },
-          registros: [registro]
-        };
-
-        if (maxChunks > 1) {
-          logInfo(`[Gabarito] Enviando lote ${i + 1}/${maxChunks} do CNPJ ${cnpj}...`);
-        }
-
-        const ok = await enviarSync(payload);
+      for (const [campo, lista] of recursos) {
+        const ok = await enviarRecurso(cnpj, baseMeta, campo, lista);
         if (!ok) todosSucesso = false;
       }
 
@@ -227,41 +310,22 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
   let   vendedoresTotal    = await extrairVendedores(idEmpresa, desde);
   let   pedidosHorarioTotal = await extrairPedidosPorHorario(idEmpresa, desde);
 
-  const baseChunks = Math.max(
-    1,
-    Math.ceil(contasPagarTotal.length     / CHUNK_SIZE),
-    Math.ceil(contasReceberTotal.length   / CHUNK_SIZE),
-    Math.ceil(entradasTotal.length        / CHUNK_SIZE),
-    Math.ceil(vendedoresTotal.length      / CHUNK_SIZE),
-    Math.ceil(pedidosHorarioTotal.length  / CHUNK_SIZE)
-  );
+  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}`);
 
-  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length} (${baseChunks} lote(s))`);
+  // Cada recurso como seu próprio stream (chunkInfo honesto por tabela), igual ao
+  // ciclo incremental. Ver enviarRecurso().
+  const baseMeta = { dataReferencia, sourceVersion, syncMode: 'full' };
+  const recursosBase = [
+    ['faturamentoMensal', faturamentoMensal],
+    ['contasPagar',       contasPagarTotal],
+    ['contasReceber',     contasReceberTotal],
+    ['entradas',          entradasTotal],
+    ['vendedores',        vendedoresTotal],
+    ['pedidosHorario',    pedidosHorarioTotal]
+  ];
 
-  for (let i = 0; i < baseChunks; i++) {
-    const cpChunk = contasPagarTotal.slice(i * CHUNK_SIZE,    (i + 1) * CHUNK_SIZE);
-    const crChunk = contasReceberTotal.slice(i * CHUNK_SIZE,  (i + 1) * CHUNK_SIZE);
-    const enChunk = entradasTotal.slice(i * CHUNK_SIZE,       (i + 1) * CHUNK_SIZE);
-    const veChunk = vendedoresTotal.slice(i * CHUNK_SIZE,     (i + 1) * CHUNK_SIZE);
-    const phChunk = pedidosHorarioTotal.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-    const fmChunk = (i === 0) ? faturamentoMensal : [];
-
-    const registro = { cnpj };
-    if (fmChunk.length > 0) registro.faturamentoMensal = fmChunk;
-    if (cpChunk.length > 0) registro.contasPagar       = cpChunk;
-    if (crChunk.length > 0) registro.contasReceber     = crChunk;
-    if (enChunk.length > 0) registro.entradas          = enChunk;
-    if (veChunk.length > 0) registro.vendedores        = veChunk;
-    if (phChunk.length > 0) registro.pedidosHorario    = phChunk;
-
-    logInfo(`[Gabarito] [${cnpj}] (full) Enviando base ${i + 1}/${baseChunks}...`);
-    const ok = await enviarSync({
-      dataReferencia,
-      sourceVersion,
-      syncMode: 'full',
-      chunkInfo: { atual: i + 1, total: baseChunks },
-      registros: [registro]
-    });
+  for (const [campo, lista] of recursosBase) {
+    const ok = await enviarRecurso(cnpj, baseMeta, campo, lista);
     if (!ok) todosSucesso = false;
   }
 
@@ -278,7 +342,7 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
       if (caChunk.length === 0) continue;
 
       logInfo(`[Gabarito] [${cnpj}] (full) Enviando curva ${ano} lote ${i + 1}/${yearChunks}...`);
-      const ok = await enviarSync({
+      const { ok } = await enviarSync({
         dataReferencia,
         sourceVersion,
         syncMode: 'incremental',
@@ -323,23 +387,28 @@ function agendarProximoCiclo() {
   logInfo('[Gabarito] Proximo ciclo em 60 minutos (se dentro da janela 08h-22h).');
 }
 
-// ── Cron ──────────────────────────────────────────────────────────────────────
+// ── Bootstrap ───────────────────────────────────────────────────────────────────
+// Pulável com GABARITO_DISABLE_BOOTSTRAP=true para que testes possam requerer este
+// módulo (e usar enviarRecurso) sem subir o cron nem conectar no Firebird.
+if (process.env.GABARITO_DISABLE_BOOTSTRAP !== 'true') {
+  const CRON_EXPR = process.env.GABARITO_CRON_MODE === 'test'
+    ? '* * * * *'
+    : '0 8-22 * * *';
 
-const CRON_EXPR = process.env.GABARITO_CRON_MODE === 'test'
-  ? '* * * * *'
-  : '0 8-22 * * *';
+  cron.schedule(CRON_EXPR, () => {
+    logInfo(`[Gabarito] Cron disparado (${CRON_EXPR}).`);
+    runMotor();
+  });
 
-cron.schedule(CRON_EXPR, () => {
-  logInfo(`[Gabarito] Cron disparado (${CRON_EXPR}).`);
-  runMotor();
-});
+  logInfo(`[Gabarito] Motor registrado — cron: ${CRON_EXPR} (modo: ${process.env.GABARITO_CRON_MODE === 'test' ? 'TESTE - todo minuto' : 'PRODUCAO - 08h-22h a cada hora'}).`);
 
-logInfo(`[Gabarito] Motor registrado — cron: ${CRON_EXPR} (modo: ${process.env.GABARITO_CRON_MODE === 'test' ? 'TESTE - todo minuto' : 'PRODUCAO - 08h-22h a cada hora'}).`);
+  if (process.env.GABARITO_RUN_ON_START === 'true') {
+    logInfo('[Gabarito] GABARITO_RUN_ON_START=true — executando agora...');
+    runDatabaseMigrations().then(() => runMotor());
+  }
 
-if (process.env.GABARITO_RUN_ON_START === 'true') {
-  logInfo('[Gabarito] GABARITO_RUN_ON_START=true — executando agora...');
-  runDatabaseMigrations().then(() => runMotor());
+  // Para o cron também, garantimos que rodou uma vez no boot
+  runDatabaseMigrations();
 }
 
-// Para o cron também, garantimos que rodou uma vez no boot
-runDatabaseMigrations();
+module.exports = { enviarRecurso };
