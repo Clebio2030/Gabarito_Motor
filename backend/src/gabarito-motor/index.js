@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const { logInfo, logWarn, logError } = require('../logger');
 const { buscarCnpjsAtivos, enviarSync } = require('./sender');
 const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario } = require('./extractor');
-const { checkStateChanged, getLastSyncedAt, updateState } = require('./syncState');
+const { checkStateChanged, getLastSyncedAt, updateState, getFullSyncedResources, markResourcesFullSynced, WINDOWED_RESOURCES } = require('./syncState');
 const { runDatabaseMigrations } = require('./migrations');
 
 const CHUNK_SIZE = 5000;
@@ -175,6 +175,9 @@ async function runMotor() {
           // incrementais. O 1º incremental sempre reenviará (hash de 2 meses
           // difere do sentinela) e gravará o hash incremental real.
           updateState(cnpj, `full-${hojeFormatado()}`);
+          // O full sync carregou os 3 anos de todos os recursos com janela —
+          // carimba o watermark para o incremental não os recarregar.
+          markResourcesFullSynced(cnpj, WINDOWED_RESOURCES);
           logInfo(`[Gabarito] CNPJ ${cnpj}: full sync concluído — hash salvo.`);
           processados++;
         } else {
@@ -184,21 +187,33 @@ async function runMotor() {
         continue;
       }
 
-      // ── INCREMENTAL: janela de 2 meses (cabe em memória) ─────────────────────
+      // ── INCREMENTAL: janela de 3 meses (cabe em memória) ─────────────────────
+      // Watermark por recurso: recurso com janela ainda sem carga histórica é
+      // extraído com a janela completa (3 anos) UMA vez; depois cai no incremental
+      // de 3 meses. Torna a adição de relatórios novos auto-corretiva.
+      const backfilled     = new Set(getFullSyncedResources(cnpj));
+      const pendentes      = WINDOWED_RESOURCES.filter(r => !backfilled.has(r));
+      const desdeHistorico = computarDesde(null); // 3 anos — carga histórica única
+      const desdeDe = (recurso) =>
+        (WINDOWED_RESOURCES.includes(recurso) && !backfilled.has(recurso)) ? desdeHistorico : desde;
+      if (pendentes.length) {
+        logInfo(`[Gabarito] [${cnpj}] Recursos sem histórico → carga única (desde ${desdeHistorico}): ${pendentes.join(', ')}`);
+      }
+
       logInfo(`[Gabarito] [${cnpj}] Extraindo faturamento mensal...`);
       const faturamentoMensal  = await extrairFaturamentoMensal(idEmpresa, anoCorrente);
       logInfo(`[Gabarito] [${cnpj}] Extraindo contas a pagar...`);
       const contasPagarTotal   = await extrairContasPagar(idEmpresa);
       logInfo(`[Gabarito] [${cnpj}] Extraindo contas a receber...`);
       const contasReceberTotal = await extrairContasReceber(idEmpresa);
-      logInfo(`[Gabarito] [${cnpj}] Extraindo curva ABC (desde ${desde})...`);
-      const { rows: curvaAbcTotal, completo: curvaAbcCompleta } = await extrairCurvaAbc(idEmpresa, desde);
-      logInfo(`[Gabarito] [${cnpj}] Extraindo entradas de estoque (desde ${desde})...`);
-      const entradasTotal      = await extrairEntradas(idEmpresa, desde);
-      logInfo(`[Gabarito] [${cnpj}] Extraindo desempenho de vendedores (desde ${desde})...`);
-      const vendedoresTotal    = await extrairVendedores(idEmpresa, desde);
-      logInfo(`[Gabarito] [${cnpj}] Extraindo pedidos por horário (desde ${desde})...`);
-      const pedidosHorarioTotal = await extrairPedidosPorHorario(idEmpresa, desde);
+      logInfo(`[Gabarito] [${cnpj}] Extraindo curva ABC (desde ${desdeDe('curvaAbc')})...`);
+      const { rows: curvaAbcTotal, completo: curvaAbcCompleta } = await extrairCurvaAbc(idEmpresa, desdeDe('curvaAbc'));
+      logInfo(`[Gabarito] [${cnpj}] Extraindo entradas de estoque (desde ${desdeDe('entradas')})...`);
+      const entradasTotal      = await extrairEntradas(idEmpresa, desdeDe('entradas'));
+      logInfo(`[Gabarito] [${cnpj}] Extraindo desempenho de vendedores (desde ${desdeDe('vendedores')})...`);
+      const vendedoresTotal    = await extrairVendedores(idEmpresa, desdeDe('vendedores'));
+      logInfo(`[Gabarito] [${cnpj}] Extraindo pedidos por horário (desde ${desdeDe('pedidosHorario')})...`);
+      const pedidosHorarioTotal = await extrairPedidosPorHorario(idEmpresa, desdeDe('pedidosHorario'));
       logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}`);
 
       const temDados = faturamentoMensal.length > 0 || contasPagarTotal.length > 0
@@ -216,6 +231,9 @@ async function runMotor() {
           chunkInfo: { atual: 1, total: 1 },
           registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [], entradas: [], vendedores: [], pedidosHorario: [] }]
         });
+        // Sem histórico a carregar (janela de 3 anos veio vazia) — marca os
+        // pendentes para não reconsultar 3 anos todo ciclo neste CNPJ.
+        if (pendentes.length) markResourcesFullSynced(cnpj, pendentes);
         processados++;
         continue;
       }
@@ -223,7 +241,10 @@ async function runMotor() {
       const dadosCompletos = { faturamentoMensal, contasPagar: contasPagarTotal, contasReceber: contasReceberTotal, curvaAbc: curvaAbcTotal, entradas: entradasTotal, vendedores: vendedoresTotal, pedidosHorario: pedidosHorarioTotal };
       const { changed, hash } = checkStateChanged(cnpj, dadosCompletos);
 
-      if (!changed) {
+      // Backfill pendente força o envio mesmo com hash inalterado: a carga
+      // histórica precisa chegar à API ainda que os últimos 3 meses não tenham
+      // mudado desde o último ciclo.
+      if (!changed && pendentes.length === 0) {
         logInfo(`[Gabarito] CNPJ ${cnpj}: Dados inalterados. Pulando envio (hash: ${hash}).`);
         processados++;
         continue;
@@ -234,11 +255,12 @@ async function runMotor() {
       // Cada recurso é enviado como seu próprio stream de lotes (chunkInfo
       // honesto por tabela). Ver enviarRecurso() — substitui o antigo chunkInfo
       // global que truncava qualquer tabela que não fosse a maior do CNPJ.
+      // O `desde` é POR RECURSO: a API deleta apenas a janela informada no swap,
+      // então recurso em carga histórica leva `desde` de 3 anos.
       const baseMeta = {
         dataReferencia,
         sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
-        syncMode: modoSync,
-        desde
+        syncMode: modoSync
       };
 
       const recursos = [
@@ -252,13 +274,20 @@ async function runMotor() {
       ];
 
       let todosSucesso = true;
+      const backfilledAgora = [];
       for (const [campo, lista] of recursos) {
-        const ok = await enviarRecurso(cnpj, baseMeta, campo, lista);
-        if (!ok) todosSucesso = false;
+        const metaRecurso = { ...baseMeta, desde: desdeDe(campo) };
+        const ok = await enviarRecurso(cnpj, metaRecurso, campo, lista);
+        if (!ok) { todosSucesso = false; continue; }
+        if (pendentes.includes(campo)) backfilledAgora.push(campo);
       }
 
       if (todosSucesso && curvaAbcCompleta) {
         updateState(cnpj, hash);
+        if (backfilledAgora.length) {
+          markResourcesFullSynced(cnpj, backfilledAgora);
+          logInfo(`[Gabarito] [${cnpj}] Carga histórica concluída: ${backfilledAgora.join(', ')}.`);
+        }
         logInfo(`[Gabarito] CNPJ ${cnpj}: hash salvo — próximo ciclo detectará apenas mudanças.`);
       } else {
         const motivo = !todosSucesso ? 'falha no envio de lotes' : 'erro na extração da Curva ABC (algum ano falhou)';
