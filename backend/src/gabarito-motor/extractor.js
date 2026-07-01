@@ -8,9 +8,46 @@
 const { query } = require('./firebird');
 const { logInfo, logWarn, logError } = require('../logger');
 
+// As colunas TEXT das views vêm de campos Firebird CHARACTER SET NONE contendo
+// bytes WIN1252 (0xE3=ã, 0xE9=é). O node-firebird decodifica campos NONE como
+// UTF-8, então cada byte de acento vira U+FFFD ("♦") — perda irreversível na
+// leitura. Solução: as próprias views entregam essas colunas via
+// CAST(col AS ... CHARACTER SET OCTETS), que o driver devolve como Buffer com os
+// bytes crus; aqui decodificamos WIN1252 corretamente. Ver sql/views_real.sql.
+//
+// WIN1252 == latin1 exceto na faixa 0x80–0x9F (aspas curvas, €, travessão, etc.),
+// mapeada abaixo. Fora dela, o byte é o próprio code point (latin1).
+const WIN1252_C1 = {
+  0x80: '€', 0x82: '‚', 0x83: 'ƒ', 0x84: '„', 0x85: '…',
+  0x86: '†', 0x87: '‡', 0x88: 'ˆ', 0x89: '‰', 0x8A: 'Š',
+  0x8B: '‹', 0x8C: 'Œ', 0x8E: 'Ž', 0x91: '‘', 0x92: '’',
+  0x93: '“', 0x94: '”', 0x95: '•', 0x96: '–', 0x97: '—',
+  0x98: '˜', 0x99: '™', 0x9A: 'š', 0x9B: '›', 0x9C: 'œ',
+  0x9E: 'ž', 0x9F: 'Ÿ'
+};
+
+function decodeWin1252(buf) {
+  let out = '';
+  for (const b of buf) {
+    out += (b >= 0x80 && b <= 0x9F && WIN1252_C1[b]) ? WIN1252_C1[b] : String.fromCharCode(b);
+  }
+  return out;
+}
+
 function fixEncoding(v) {
-  if (Buffer.isBuffer(v)) return v.toString('latin1');
+  if (Buffer.isBuffer(v)) return decodeWin1252(v);
   return String(v);
+}
+
+/**
+ * Lê um campo de texto de uma linha. As views entregam as colunas de texto como
+ * OCTETS (Buffer de bytes WIN1252 crus); fixEncoding os decodifica corretamente.
+ * Colunas não-OCTETS caem no caminho String (retrocompatível). Sempre retorna
+ * string já decodificada e trimada.
+ */
+function readText(row, campo) {
+  const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
+  return fixEncoding(v).trim();
 }
 
 // Passo 2: Mapear CNPJ -> IDEMPRESA
@@ -135,10 +172,7 @@ async function extrairContasPagar(idEmpresa) {
   }
 
   return (rows || []).map((row) => {
-    const str = (campo) => {
-      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return fixEncoding(v).trim();
-    };
+    const str = (campo) => readText(row, campo);
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
       return toNumber(v);
@@ -202,10 +236,7 @@ async function extrairContasReceber(idEmpresa) {
   }
 
   return (rows || []).map((row) => {
-    const str = (campo) => {
-      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return fixEncoding(v).trim();
-    };
+    const str = (campo) => readText(row, campo);
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
       return toNumber(v);
@@ -323,10 +354,7 @@ async function extrairCurvaAbc(idEmpresa, desde) {
 
   const rows = allRows;
   return { rows: rows.map((row) => {
-    const str = (campo) => {
-      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return fixEncoding(v).trim();
-    };
+    const str = (campo) => readText(row, campo);
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
       return toNumber(v);
@@ -414,10 +442,7 @@ async function extrairEntradas(idEmpresa, desde) {
   }
 
   return (rows || []).map((row) => {
-    const str = (campo) => {
-      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return fixEncoding(v).trim();
-    };
+    const str = (campo) => readText(row, campo);
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
       return toNumber(v);
@@ -468,10 +493,7 @@ async function extrairVendedores(idEmpresa, desde) {
   }
 
   return (rows || []).map((row) => {
-    const str = (campo) => {
-      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return fixEncoding(v).trim();
-    };
+    const str = (campo) => readText(row, campo);
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
       return toNumber(v);
@@ -522,10 +544,7 @@ async function extrairPedidosPorHorario(idEmpresa, desde) {
   }
 
   return (rows || []).map((row) => {
-    const str = (campo) => {
-      const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-      return fixEncoding(v).trim();
-    };
+    const str = (campo) => readText(row, campo);
     const num = (campo) => {
       const v = row[campo] ?? row[campo.toLowerCase()] ?? 0;
       return toNumber(v);
@@ -597,10 +616,7 @@ async function buildMapasCurvaAbc() {
  * Mapeia uma linha bruta do Firebird para o formato de saída da Curva ABC.
  */
 function mapCurvaAbcRow(row, mapaCodforn, mapaCodbarra, mapaPercUbstTrib) {
-  const str = (campo) => {
-    const v = row[campo] ?? row[campo.toLowerCase()] ?? '';
-    return fixEncoding(v).trim();
-  };
+  const str = (campo) => readText(row, campo);
   const num = (campo) => toNumber(row[campo] ?? row[campo.toLowerCase()] ?? 0);
   const dt  = (campo) => {
     const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
