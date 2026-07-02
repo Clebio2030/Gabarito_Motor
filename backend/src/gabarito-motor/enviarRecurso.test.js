@@ -15,8 +15,9 @@ const MODULE_PATH = require.resolve('./index');
 
 function carregarComFlag(expectedTotalOn) {
   delete require.cache[MODULE_PATH];
-  if (expectedTotalOn) process.env.GABARITO_EXPECTED_TOTAL = 'true';
-  else delete process.env.GABARITO_EXPECTED_TOTAL;
+  // Default ON: ausência da env = ligado. Off só com ='false'.
+  if (expectedTotalOn) delete process.env.GABARITO_EXPECTED_TOTAL;
+  else process.env.GABARITO_EXPECTED_TOTAL = 'false';
   return require('./index');
 }
 

@@ -25,11 +25,14 @@ const { runDatabaseMigrations } = require('./migrations');
 
 const CHUNK_SIZE = 5000;
 
-// Fase 1 (entrega íntegra): quando true, cada recurso STAGINGÁVEL leva
-// `expectedTotal`+`snapshotId` no payload e o Motor faz fail-fast + valida a
-// contagem `persisted` devolvida pela API (staging + swap verificado). Off =
-// comportamento legado byte-a-byte. Ver docs/spec-entrega-integra-fluxo-caixa.md
-const SEND_EXPECTED_TOTAL = process.env.GABARITO_EXPECTED_TOTAL === 'true';
+// Fase 1 (entrega íntegra): cada recurso STAGINGÁVEL leva `expectedTotal`+
+// `snapshotId` no payload; o Motor faz fail-fast + valida a contagem `persisted`
+// devolvida pela API (staging + swap verificado).
+// DEFAULT ON: o Motor sempre manda as etiquetas; quem governa a ativação real é
+// a allowlist da API (STAGING_SWAP_CNPJS) — CNPJ fora da lista → a API ignora e
+// roda o legado (NoOp, sem 400). Escape hatch: GABARITO_EXPECTED_TOTAL=false
+// desliga o envio num cliente específico. Ver docs/spec-entrega-integra-fluxo-caixa.md
+const SEND_EXPECTED_TOTAL = process.env.GABARITO_EXPECTED_TOTAL !== 'false';
 
 // Recursos que a API materializa via staging+swap (têm tabela em sync_staging.*).
 // faturamentoMensal fica DE FORA — a API não faz staging dele e rejeitaria o
