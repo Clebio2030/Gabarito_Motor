@@ -415,6 +415,7 @@ async function extrairCurvaAbc(idEmpresa, desde) {
       frete:             num('FRETE'),
       ipi:               num('IPI'),
       icms:              num('ICMS'),
+      multCaixa:         num('MULTCAIXA'),
       percUbstTrib:      mapaPercUbstTrib[cdProduto] ?? 0
     };
   }), completo };
@@ -672,6 +673,7 @@ function mapCurvaAbcRow(row, mapaCodforn, mapaCodbarra, mapaPercUbstTrib) {
     frete:             num('FRETE'),
     ipi:               num('IPI'),
     icms:              num('ICMS'),
+    multCaixa:         num('MULTCAIXA'),
     percUbstTrib:      mapaPercUbstTrib[cdProduto] ?? 0
   };
 }
