@@ -67,7 +67,7 @@ async function mapearCnpjsParaIdEmpresa(cnpjsAtivos) {
   for (const row of rows) {
     const cnpjNormalizado = normalizarCnpj(row.cgc || row.CGC || '');
     const id = row.idempresa ?? row.IDEMPRESA;
-    if (cnpjNormalizado) lookupFirebird[cnpjNormalizado] = id;
+    if (cnpjNormalizado && !(cnpjNormalizado in lookupFirebird)) lookupFirebird[cnpjNormalizado] = id;
   }
 
   const mapa = {};
