@@ -111,15 +111,12 @@ type "%LOGTEMP%"
 echo  ----------------------------------------------------------
 echo.
 
-rem Verifica sucesso: busca a mensagem de confirmacao do SQL no output
-findstr /i "Views criadas" "%LOGTEMP%" >nul 2>&1
-if "!ERRORLEVEL!" == "0" (
-    del "%LOGTEMP%" >nul 2>&1
-    goto :FIM_OK
-)
+rem Verifica sucesso: ausencia de erro no output
+findstr /i "Statement failed" "%LOGTEMP%" >nul 2>&1
+if "!ERRORLEVEL!" == "0" goto :FIM_SQL_ERRO
 
-rem Se nao achou a mensagem de sucesso, houve erro
-goto :FIM_SQL_ERRO
+del "%LOGTEMP%" >nul 2>&1
+goto :FIM_OK
 
 
 :ISQL_NAO_ENCONTRADO
