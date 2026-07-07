@@ -69,6 +69,13 @@ start /wait msiexec /i node.msi
 
 echo.
 echo Instalacao do Node.js concluida (ou cancelada pelo usuario).
+
+:: Recarrega PATH de maquina + usuario do registro (CMD nao relê após MSI instalar)
+echo Atualizando PATH da sessao...
+for /f "delims=" %%i in ('powershell -NoProfile -Command "[System.Environment]::GetEnvironmentVariable(\"Path\",\"Machine\")"') do set "SYSPATH=%%i"
+for /f "delims=" %%i in ('powershell -NoProfile -Command "[System.Environment]::GetEnvironmentVariable(\"Path\",\"User\")"') do set "USRPATH=%%i"
+set "PATH=!SYSPATH!;!USRPATH!;%PATH%"
+
 goto CHECK_NPM
 
 :SKIP_NODE
