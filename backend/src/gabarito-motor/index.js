@@ -434,13 +434,15 @@ if (process.env.GABARITO_DISABLE_BOOTSTRAP !== 'true') {
 
   logInfo(`[Gabarito] Motor registrado — cron: ${CRON_EXPR} (modo: ${process.env.GABARITO_CRON_MODE === 'test' ? 'TESTE - todo minuto' : 'PRODUCAO - 08h-22h a cada hora'}).`);
 
-  if (process.env.GABARITO_RUN_ON_START === 'true') {
-    logInfo('[Gabarito] GABARITO_RUN_ON_START=true — executando agora...');
-    runDatabaseMigrations().then(() => runMotor());
-  }
-
-  // Para o cron também, garantimos que rodou uma vez no boot
-  runDatabaseMigrations();
+  // Garante que a migração rode apenas UMA vez no boot (para preparar as views pro motor e pro cron)
+  runDatabaseMigrations().then(() => {
+    if (process.env.GABARITO_RUN_ON_START === 'true') {
+      logInfo('[Gabarito] GABARITO_RUN_ON_START=true — executando motor agora...');
+      runMotor();
+    }
+  }).catch(err => {
+    logError('[Gabarito] Erro fatal na migração durante o boot:', err);
+  });
 }
 
 module.exports = { enviarRecurso };
