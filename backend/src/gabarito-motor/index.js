@@ -19,7 +19,7 @@ const cron = require('node-cron');
 const crypto = require('crypto');
 const { logInfo, logWarn, logError } = require('../logger');
 const { buscarCnpjsAtivos, enviarSync } = require('./sender');
-const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario } = require('./extractor');
+const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario, extrairProjecaoPagamento } = require('./extractor');
 const { checkStateChanged, getLastSyncedAt, updateState, getFullSyncedResources, markResourcesFullSynced, WINDOWED_RESOURCES } = require('./syncState');
 const { runDatabaseMigrations } = require('./migrations');
 
@@ -38,7 +38,8 @@ const SEND_EXPECTED_TOTAL = process.env.GABARITO_EXPECTED_TOTAL !== 'false';
 // faturamentoMensal fica DE FORA — a API não faz staging dele e rejeitaria o
 // payload com 400 multi_resource_payload; ele segue sempre pelo caminho legado.
 const RECURSOS_STAGING = new Set([
-  'contasPagar', 'contasReceber', 'curvaAbc', 'entradas', 'vendedores', 'pedidosHorario'
+  'contasPagar', 'contasReceber', 'curvaAbc', 'entradas', 'vendedores', 'pedidosHorario',
+  'projecaoPagamento'
 ]);
 
 let isMotorRunning = false;
@@ -57,7 +58,9 @@ let isMotorRunning = false;
  * terminava em ex. 8/79 e nunca sinalizava conclusão, truncando o snapshot.
  *
  * Recursos vazios são pulados (mantém o comportamento anterior, que omitia o
- * campo quando não havia linhas).
+ * campo quando não havia linhas) — a menos que `opts.enviarVazio` esteja ligado,
+ * caso em que o vazio vira um snapshot explícito (`expectedTotal: 0`) que esvazia
+ * a tabela viva na API. Ver o comentário no corpo da função.
  *
  * Fase 1 (SEND_EXPECTED_TOTAL=true): gera um `snapshotId` (uuid v4) único por
  * entrega de (cnpj, recurso) e o repete em todos os lotes; inclui `expectedTotal`
@@ -72,15 +75,23 @@ let isMotorRunning = false;
  * @param {string}  nomeCampo nome do campo no registro (ex.: 'contasPagar')
  * @param {Array}   registros array completo do recurso
  * @param {Function} sendFn   injeção do enviador (default: enviarSync) — facilita teste
+ * @param {object}  opts      { enviarVazio } — ver acima
  * @returns {Promise<boolean>} true se todos os lotes do recurso enviaram OK
  */
-async function enviarRecurso(cnpj, baseMeta, nomeCampo, registros, sendFn = enviarSync) {
+async function enviarRecurso(cnpj, baseMeta, nomeCampo, registros, sendFn = enviarSync, opts = {}) {
   const lista = registros || [];
-  if (lista.length === 0) return true;
+
+  // Recurso vazio: por padrão o campo é omitido (a API não apaga nada) — é o
+  // comportamento histórico e o que protege contra uma extração que falhou e
+  // devolveu [] . Com `enviarVazio`, manda 1 lote com expectedTotal 0 e array
+  // vazio: o staging fica vazio, 0 === 0 bate e o swap ESVAZIA a tabela viva.
+  // Só quem sabe que a extração deu certo pode ligar isso.
+  const enviarVazio = opts.enviarVazio === true;
+  if (lista.length === 0 && !enviarVazio) return true;
 
   const usaStaging = SEND_EXPECTED_TOTAL && RECURSOS_STAGING.has(nomeCampo);
   const expectedTotal = lista.length;            // congelado para toda a entrega
-  const total = Math.ceil(expectedTotal / CHUNK_SIZE);
+  const total = Math.max(1, Math.ceil(expectedTotal / CHUNK_SIZE));
   const snapshotId = usaStaging ? crypto.randomUUID() : null;
   let ok = true;
 
@@ -143,6 +154,7 @@ async function runMotor() {
   const inicio = Date.now();
   const dataReferencia = hojeFormatado();
   const anoCorrente    = new Date().getFullYear();
+  const projecaoDesde  = primeiroDiaDoMes();  // borda real da janela de projecaoPagamento
 
   logInfo(`[Gabarito] Iniciando ciclo — data: ${dataReferencia}, ano: ${anoCorrente}`);
 
@@ -217,11 +229,14 @@ async function runMotor() {
       const vendedoresTotal    = await extrairVendedores(idEmpresa, desdeDe('vendedores'));
       logInfo(`[Gabarito] [${cnpj}] Extraindo pedidos por horário (desde ${desdeDe('pedidosHorario')})...`);
       const pedidosHorarioTotal = await extrairPedidosPorHorario(idEmpresa, desdeDe('pedidosHorario'));
-      logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}`);
+      logInfo(`[Gabarito] [${cnpj}] Extraindo projeção de pagamento (janela ${projecaoDesde} + 3 meses)...`);
+      const { rows: projecaoPagamentoTotal, completo: projecaoCompleta } = await extrairProjecaoPagamento(idEmpresa);
+      logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}`);
 
       const temDados = faturamentoMensal.length > 0 || contasPagarTotal.length > 0
         || contasReceberTotal.length > 0 || curvaAbcTotal.length > 0 || entradasTotal.length > 0
-        || vendedoresTotal.length > 0 || pedidosHorarioTotal.length > 0;
+        || vendedoresTotal.length > 0 || pedidosHorarioTotal.length > 0
+        || projecaoPagamentoTotal.length > 0;
 
       if (!temDados) {
         logWarn(`[Gabarito] CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) sem dados em ${anoCorrente}.`);
@@ -234,6 +249,14 @@ async function runMotor() {
           chunkInfo: { atual: 1, total: 1 },
           registros: [{ cnpj, faturamentoMensal: [], contasPagar: [], contasReceber: [], curvaAbc: [], entradas: [], vendedores: [], pedidosHorario: [] }]
         });
+        // Mês sem títulos a pagar: manda o snapshot vazio explícito para a tela
+        // distinguir "não tem conta a pagar" de "a ingestão parou". Vai fora do
+        // payload legado acima porque precisa ser 1 recurso × 1 CNPJ por POST.
+        await enviarRecurso(
+          cnpj,
+          metaProjecaoPagamento({ dataReferencia, sourceVersion: process.env.GABARITO_VERSION || '1.0.0' }, projecaoDesde),
+          'projecaoPagamento', [], enviarSync, { enviarVazio: projecaoCompleta }
+        );
         // Sem histórico a carregar (janela de 3 anos veio vazia) — marca os
         // pendentes para não reconsultar 3 anos todo ciclo neste CNPJ.
         if (pendentes.length) markResourcesFullSynced(cnpj, pendentes);
@@ -241,7 +264,7 @@ async function runMotor() {
         continue;
       }
 
-      const dadosCompletos = { faturamentoMensal, contasPagar: contasPagarTotal, contasReceber: contasReceberTotal, curvaAbc: curvaAbcTotal, entradas: entradasTotal, vendedores: vendedoresTotal, pedidosHorario: pedidosHorarioTotal };
+      const dadosCompletos = { faturamentoMensal, contasPagar: contasPagarTotal, contasReceber: contasReceberTotal, curvaAbc: curvaAbcTotal, entradas: entradasTotal, vendedores: vendedoresTotal, pedidosHorario: pedidosHorarioTotal, projecaoPagamento: projecaoPagamentoTotal };
       const { changed, hash } = checkStateChanged(cnpj, dadosCompletos);
 
       // Backfill pendente força o envio mesmo com hash inalterado: a carga
@@ -253,7 +276,7 @@ async function runMotor() {
         continue;
       }
 
-      logInfo(`[Gabarito] CNPJ ${cnpj}: faturamento=${faturamentoMensal.length}, ctaPagar=${contasPagarTotal.length}, ctaReceber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}`);
+      logInfo(`[Gabarito] CNPJ ${cnpj}: faturamento=${faturamentoMensal.length}, ctaPagar=${contasPagarTotal.length}, ctaReceber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}`);
 
       // Cada recurso é enviado como seu próprio stream de lotes (chunkInfo
       // honesto por tabela). Ver enviarRecurso() — substitui o antigo chunkInfo
@@ -273,19 +296,26 @@ async function runMotor() {
         ['curvaAbc',          curvaAbcTotal],
         ['entradas',          entradasTotal],
         ['vendedores',        vendedoresTotal],
-        ['pedidosHorario',    pedidosHorarioTotal]
+        ['pedidosHorario',    pedidosHorarioTotal],
+        ['projecaoPagamento', projecaoPagamentoTotal]
       ];
 
       let todosSucesso = true;
       const backfilledAgora = [];
       for (const [campo, lista] of recursos) {
-        const metaRecurso = { ...baseMeta, desde: desdeDe(campo) };
-        const ok = await enviarRecurso(cnpj, metaRecurso, campo, lista);
+        const ehProjecao  = campo === 'projecaoPagamento';
+        const metaRecurso = ehProjecao
+          ? metaProjecaoPagamento(baseMeta, projecaoDesde)
+          : { ...baseMeta, desde: desdeDe(campo) };
+        // Projeção vazia com extração OK vira snapshot vazio (esvazia a viva);
+        // com extração falha, nada é enviado e o hash não é salvo mais abaixo.
+        const opts = ehProjecao ? { enviarVazio: projecaoCompleta } : {};
+        const ok = await enviarRecurso(cnpj, metaRecurso, campo, lista, enviarSync, opts);
         if (!ok) { todosSucesso = false; continue; }
         if (pendentes.includes(campo)) backfilledAgora.push(campo);
       }
 
-      if (todosSucesso && curvaAbcCompleta) {
+      if (todosSucesso && curvaAbcCompleta && projecaoCompleta) {
         updateState(cnpj, hash);
         if (backfilledAgora.length) {
           markResourcesFullSynced(cnpj, backfilledAgora);
@@ -293,7 +323,9 @@ async function runMotor() {
         }
         logInfo(`[Gabarito] CNPJ ${cnpj}: hash salvo — próximo ciclo detectará apenas mudanças.`);
       } else {
-        const motivo = !todosSucesso ? 'falha no envio de lotes' : 'erro na extração da Curva ABC (algum ano falhou)';
+        const motivo = !todosSucesso ? 'falha no envio de lotes'
+          : (!curvaAbcCompleta ? 'erro na extração da Curva ABC (algum ano falhou)'
+                               : 'erro na extração da projeção de pagamento');
         logWarn(`[Gabarito] CNPJ ${cnpj}: hash NÃO salvo (${motivo}). Próximo ciclo reenviará tudo.`);
       }
 
@@ -341,8 +373,11 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
   let   entradasTotal      = await extrairEntradas(idEmpresa, desde);
   let   vendedoresTotal    = await extrairVendedores(idEmpresa, desde);
   let   pedidosHorarioTotal = await extrairPedidosPorHorario(idEmpresa, desde);
+  // Projeção não tem carga histórica: a janela é sempre mês corrente + 2 meses.
+  let { rows: projecaoPagamentoTotal, completo: projecaoCompleta } = await extrairProjecaoPagamento(idEmpresa);
+  if (!projecaoCompleta) completo = false;
 
-  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}`);
+  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}`);
 
   // Cada recurso como seu próprio stream (chunkInfo honesto por tabela), igual ao
   // ciclo incremental. Ver enviarRecurso().
@@ -353,16 +388,23 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
     ['contasReceber',     contasReceberTotal],
     ['entradas',          entradasTotal],
     ['vendedores',        vendedoresTotal],
-    ['pedidosHorario',    pedidosHorarioTotal]
+    ['pedidosHorario',    pedidosHorarioTotal],
+    ['projecaoPagamento', projecaoPagamentoTotal]
   ];
 
   for (const [campo, lista] of recursosBase) {
-    const ok = await enviarRecurso(cnpj, baseMeta, campo, lista);
+    const ehProjecao  = campo === 'projecaoPagamento';
+    const metaRecurso = ehProjecao
+      ? metaProjecaoPagamento(baseMeta, primeiroDiaDoMes())
+      : baseMeta;
+    const opts = ehProjecao ? { enviarVazio: projecaoCompleta } : {};
+    const ok = await enviarRecurso(cnpj, metaRecurso, campo, lista, enviarSync, opts);
     if (!ok) todosSucesso = false;
   }
 
   // Libera os arrays base antes do streaming da curva (reduz pico de memória)
   contasPagarTotal = contasReceberTotal = entradasTotal = vendedoresTotal = pedidosHorarioTotal = null;
+  projecaoPagamentoTotal = null;
 
   // 2) Curva ABC em streaming, um ano por vez
   await extrairCurvaAbcStreaming(idEmpresa, desde, async ({ ano, anoDesde, rows, completo: anoCompleto }) => {
@@ -413,6 +455,28 @@ function computarDesde(lastSyncedAt) {
 function hojeFormatado() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** 1º dia do mês corrente (YYYY-MM-DD) — borda inferior da janela da projeção. */
+function primeiroDiaDoMes() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+}
+
+/**
+ * Metadados do POST de `projecaoPagamento`.
+ *
+ * Difere dos demais recursos em dois pontos, de propósito:
+ *  - `syncMode: 'full'` — todo envio é o snapshot completo da janela, não um
+ *    delta (a view recalcula a janela a cada leitura).
+ *  - `desde` = 1º dia do mês corrente — a janela é FUTURA (mês corrente + 2), e
+ *    o `desde` do ciclo (3 meses ATRÁS) descreveria uma janela que não é a dele.
+ *
+ * @param {object} baseMeta
+ * @param {string} desde
+ */
+function metaProjecaoPagamento(baseMeta, desde) {
+  return { ...baseMeta, syncMode: 'full', desde };
 }
 
 function agendarProximoCiclo() {

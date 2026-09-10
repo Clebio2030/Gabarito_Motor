@@ -50,6 +50,44 @@ function readText(row, campo) {
   return fixEncoding(v).trim();
 }
 
+/**
+ * Lê um campo de texto devolvendo `null` (não string vazia) quando não há valor.
+ * O ERP grava '' em códigos de conta não usados (ex.: CDSUBSUBSUBCONTA) — a API
+ * espera null nesse caso, não "".
+ */
+function readTextOrNull(row, campo) {
+  const s = readText(row, campo);
+  return s === '' ? null : s;
+}
+
+/** Número ou `null` quando a coluna vem nula/ausente (não converte para 0). */
+function readNumberOrNull(row, campo) {
+  const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
+  if (v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Data pura "YYYY-MM-DD" a partir dos componentes LOCAIS do Date.
+ *
+ * Não use toISOString() aqui: as colunas do destino são DATE e um
+ * "2026-09-01T00:00:00-03:00" vira 31/08 no banco — o vencimento cai no mês
+ * errado. As colunas de data do CTAPAGAR são TIMESTAMP, então a hora é
+ * descartada de propósito.
+ *
+ * Data impossível (ano < 2000 ou > 2100) vira `null`: descarta-se o VALOR, nunca
+ * a linha. Já temos dt_venc gravado como 0219/1023/8202 vindos do contasPagar.
+ */
+function readDateOnly(row, campo) {
+  const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
+  const d = (v instanceof Date) ? v : (v ? new Date(v) : null);
+  if (!d || Number.isNaN(d.getTime())) return null;
+  const ano = d.getFullYear();
+  if (ano < 2000 || ano > 2100) return null;
+  return `${ano}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 // Passo 2: Mapear CNPJ -> IDEMPRESA
 
 /**
@@ -567,6 +605,92 @@ async function extrairPedidosPorHorario(idEmpresa, desde) {
   });
 }
 
+// Passo 10: Extrair Projecao de Pagamento
+
+/**
+ * Mapeia uma linha da GABARITO_PROJECAO_PAGAMENTO para o payload da API.
+ *
+ * Função pura (sem banco) de propósito: é o contrato de campos do recurso e o
+ * único ponto onde as regras de formatação da API vivem — datas "YYYY-MM-DD",
+ * `null` de verdade (nunca "" nem 0 fabricado), números com ponto decimal e
+ * texto já decodificado de WIN1252.
+ *
+ * @param {object} row  linha crua do driver (colunas em minúsculas)
+ * @returns {object}
+ */
+function mapProjecaoPagamentoRow(row) {
+  const str  = (campo) => readTextOrNull(row, campo);
+  const num  = (campo) => readNumberOrNull(row, campo);
+  const data = (campo) => readDateOnly(row, campo);
+
+  return {
+    // PK do CTAPAGAR (CONTROLE) — chave estável do título, única por CNPJ.
+    srcKey:        String(row.SRC_KEY ?? row.src_key ?? ''),
+    idEmpresa:     num('IDEMPRESA'),
+    notaFiscal:    str('NOTAFISCAL'),
+    parcela:       num('PARCELA'),
+    nrDoc:         str('NRDOC'),
+    status:        num('STATUS'),
+    dtVenc:        data('DTVENC'),
+    dtPagto:       data('DTPAGTO'),
+    dtInclusao:    data('DTINCLUSAO'),
+    historico:     str('HISTORICO'),
+    codPagto:      num('CODPAGTO'),
+    // FK inteira para RECEBTO.CDRECEBTO — serializada como string porque é
+    // assim que a API declarou o campo. `recebto` é a descrição do CODPAGTO.
+    tpPagto:       str('TPPAGTO'),
+    recebto:       str('RECEBTO'),
+    valor:         num('VALOR'),
+    total:         num('TOTAL'),
+    juros:         num('JUROS'),
+    desconto:      num('DESCONTO'),
+    vlPago:        toNumber(row.VLPAGO ?? row.vlpago ?? 0),
+    fornecedor:    str('FORNECEDOR'),
+    cdFornecedor:  num('CDFORNECEDOR'),
+    // Os 4 níveis de conta são VARCHAR no ERP ('007', '7.2'): mandar como
+    // número perderia o zero à esquerda e quebraria o agrupamento da tela.
+    cdConta1:      str('CDCONTA1'),
+    conta1:        str('CONTA1'),
+    cdConta2:      str('CDCONTA2'),
+    conta2:        str('CONTA2'),
+    cdConta3:      str('CDCONTA3'),
+    conta3:        str('CONTA3'),
+    cdConta4:      str('CDCONTA4'),
+    conta4:        str('CONTA4'),
+    statusVale:    num('STATUSVALE'),
+    cdClienteVale: num('CDCLIENTEVALE')
+  };
+}
+
+/**
+ * Busca a projeção de pagamento de um IDEMPRESA.
+ *
+ * A janela (mês corrente + 2 meses por DTVENC) e os filtros vivem na view — este
+ * recurso não usa `desde`: a janela é FUTURA, o oposto do backfill de 3 anos.
+ *
+ * Devolve `{ rows, completo }` como extrairCurvaAbc: `completo: false` sinaliza
+ * falha de leitura (view ausente, timeout) e é o que impede o Motor de mandar um
+ * snapshot vazio — que, com expectedTotal 0, apagaria a tabela viva na API.
+ *
+ * @param {number} idEmpresa
+ * @returns {Promise<{rows: Array, completo: boolean}>}
+ */
+async function extrairProjecaoPagamento(idEmpresa) {
+  let rows = [];
+  let completo = true;
+  try {
+    rows = await query(
+      `SELECT * FROM GABARITO_PROJECAO_PAGAMENTO WHERE IDEMPRESA = ? ORDER BY DTVENC, SRC_KEY`,
+      [idEmpresa]
+    );
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar GABARITO_PROJECAO_PAGAMENTO (IDEMPRESA=${idEmpresa}):`, err);
+    completo = false;
+  }
+
+  return { rows: (rows || []).map(mapProjecaoPagamentoRow), completo };
+}
+
 // ── Streaming Curva ABC (Full Sync) ───────────────────────────────────────────
 
 /**
@@ -742,5 +866,7 @@ module.exports = {
   extrairCurvaAbcStreaming,
   extrairEntradas,
   extrairVendedores,
-  extrairPedidosPorHorario
+  extrairPedidosPorHorario,
+  extrairProjecaoPagamento,
+  mapProjecaoPagamentoRow
 };

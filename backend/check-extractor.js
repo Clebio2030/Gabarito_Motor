@@ -7,6 +7,7 @@ require('dotenv').config();
 const {
   mapearCnpjsParaIdEmpresa, extrairContasPagar, extrairContasReceber,
   extrairCurvaAbc, extrairEntradas, extrairVendedores, extrairPedidosPorHorario,
+  extrairProjecaoPagamento,
 } = require('./src/gabarito-motor/extractor');
 const { buscarCnpjsAtivos } = require('./src/gabarito-motor/sender');
 
@@ -42,6 +43,7 @@ function scan(label, rows, campos) {
     total += scan('entradas',      await extrairEntradas(id, desde),        ['descricao', 'fornecedor', 'empresa']);
     total += scan('vendedores',    await extrairVendedores(id, desde),      ['nomeVend']);
     total += scan('pedidosHorario', await extrairPedidosPorHorario(id, desde), ['nomeEmpresa']);
+    total += scan('projecaoPagamento', (await extrairProjecaoPagamento(id)).rows, ['fornecedor', 'historico', 'recebto', 'conta1', 'conta2', 'conta3', 'conta4']);
   }
   console.log(total === 0
     ? '\n✅ FIX OK: extractor não produziu nenhum U+FFFD. Acentos recuperados na leitura.'

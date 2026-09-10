@@ -139,6 +139,55 @@ test('ON: recurso vazio → não envia nada e retorna true', async () => {
   assert.equal(chamadas.length, 0);
 });
 
+// ── Snapshot vazio explícito (expectedTotal: 0) ────────────────────────────────
+// Sem isso, um mês sem títulos deixa o mês anterior preso na tabela viva — a tela
+// não distingue "não tem conta a pagar" de "a ingestão parou".
+
+test('ON: vazio com enviarVazio → 1 POST com expectedTotal 0 e array vazio', async () => {
+  const { enviarRecurso } = carregarComFlag(true);
+  const { sendFn, chamadas } = criarMock((p) => ({ ok: true, persisted: { projecaoPagamento: { total: 0 } } }));
+
+  const ok = await enviarRecurso('CNPJ1', baseMeta, 'projecaoPagamento', [], sendFn, { enviarVazio: true });
+
+  assert.equal(ok, true);
+  assert.equal(chamadas.length, 1);
+  assert.deepEqual(chamadas[0].chunkInfo, { atual: 1, total: 1 });
+  assert.equal(chamadas[0].expectedTotal, 0);
+  assert.ok(chamadas[0].snapshotId, 'snapshotId presente (recurso stagingável)');
+  assert.deepEqual(chamadas[0].registros[0].projecaoPagamento, []);
+});
+
+test('ON: vazio com enviarVazio e persisted.total ≠ 0 → falha o recurso', async () => {
+  const { enviarRecurso } = carregarComFlag(true);
+  const { sendFn } = criarMock({ 0: { ok: true, persisted: { projecaoPagamento: { total: 3 } } } });
+
+  const ok = await enviarRecurso('CNPJ1', baseMeta, 'projecaoPagamento', [], sendFn, { enviarVazio: true });
+  assert.equal(ok, false, 'API diz que ficaram 3 linhas — a viva não esvaziou');
+});
+
+test('ON: vazio SEM enviarVazio → segue omitindo o campo (demais recursos intactos)', async () => {
+  const { enviarRecurso } = carregarComFlag(true);
+  const { sendFn, chamadas } = criarMock({});
+  const ok = await enviarRecurso('CNPJ1', baseMeta, 'projecaoPagamento', [], sendFn);
+  assert.equal(ok, true);
+  assert.equal(chamadas.length, 0);
+});
+
+test('ON: projecaoPagamento é stagingável (leva expectedTotal e snapshotId)', async () => {
+  const { enviarRecurso } = carregarComFlag(true);
+  const { sendFn, chamadas } = criarMock((p) =>
+    p.chunkInfo.atual === p.chunkInfo.total
+      ? { ok: true, persisted: { projecaoPagamento: { total: 620 } } }
+      : { ok: true });
+
+  const ok = await enviarRecurso('CNPJ1', baseMeta, 'projecaoPagamento', linhas(620), sendFn);
+
+  assert.equal(ok, true);
+  assert.equal(chamadas.length, 1, '620 linhas cabem em 1 chunk');
+  assert.equal(chamadas[0].expectedTotal, 620);
+  assert.ok(chamadas[0].snapshotId);
+});
+
 // ── Flag OFF (legado) ───────────────────────────────────────────────────────────
 
 test('OFF: sem expectedTotal/snapshotId; segue mesmo após falha (não fail-fast)', async () => {

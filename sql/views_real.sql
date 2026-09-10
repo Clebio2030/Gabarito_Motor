@@ -364,3 +364,102 @@ FROM SAIDAESTOQUE SE
     JOIN CONFIGURACAO C ON (SE.IDEMPRESA = C.IDEMPRESA)
 WHERE
     SE.STATUS IN (1, 3);
+
+/* Projecao de Pagamento — recorte de CTAPAGAR para o relatorio de projecao.
+   NAO substitui GABARITO_CTAPAGAR_GERAL: traz campos que aquela nao tem
+   (CODPAGTO, TPPAGTO, RECEBTO, DTINCLUSAO, STATUSVALE, CDCLIENTEVALE e os
+   CODIGOS dos 4 niveis de conta) numa janela FUTURA: mes corrente + 2 meses.
+
+   Notas de schema (verificadas no ERP):
+   - SRC_KEY = CTAPAGAR.CONTROLE (PK_CTAPAGAR, INTEGER) -> chave estavel do titulo.
+   - CDCONTA..CDSUBSUBSUBCONTA sao VARCHAR (3/5/5/7), nao inteiros: o codigo vai
+     como TEXTO para nao perder zero a esquerda. O 4o nivel vem '' quando vazio.
+   - DTVENC/DTPAGTO/DTINCLUSAO sao TIMESTAMP: a janela usa intervalo SEMIABERTO
+     (>= inicio AND < inicio+3 meses); BETWEEN com borda as 00:00 perderia
+     titulos que tenham hora.
+   - NOT CONTAINING 'Provis' cobre 'Provisao' E 'Provisao' acentuado sem depender
+     de literal acentuado sobreviver ao utf8->WIN1252 do migrations.js.
+   - MULTA nao existe em CTAPAGAR (JUROS e DESCONTO existem). */
+CREATE OR ALTER VIEW GABARITO_PROJECAO_PAGAMENTO (
+    IDEMPRESA,
+    SRC_KEY,
+    NOTAFISCAL,
+    PARCELA,
+    NRDOC,
+    STATUS,
+    DTVENC,
+    DTPAGTO,
+    DTINCLUSAO,
+    HISTORICO,
+    CODPAGTO,
+    TPPAGTO,
+    RECEBTO,
+    VALOR,
+    TOTAL,
+    JUROS,
+    DESCONTO,
+    VLPAGO,
+    FORNECEDOR,
+    CDFORNECEDOR,
+    CDCONTA1,
+    CONTA1,
+    CDCONTA2,
+    CONTA2,
+    CDCONTA3,
+    CONTA3,
+    CDCONTA4,
+    CONTA4,
+    STATUSVALE,
+    CDCLIENTEVALE
+) AS
+SELECT
+    cta.IDEMPRESA,
+    cta.CONTROLE                                                    AS SRC_KEY,
+    CAST(cta.NOTAFISCAL       AS VARCHAR(20)  CHARACTER SET OCTETS) AS NOTAFISCAL,
+    cta.PARCELA,
+    CAST(cta.NRDOC            AS VARCHAR(20)  CHARACTER SET OCTETS) AS NRDOC,
+    cta.STATUS,
+    cta.DTVENC,
+    cta.DTPAGTO,
+    cta.DTINCLUSAO,
+    CAST(cta.HISTORICO        AS VARCHAR(255) CHARACTER SET OCTETS) AS HISTORICO,
+    cta.CODPAGTO,
+    cta.TPPAGTO,
+    CAST(r.RECEBTO            AS VARCHAR(50)  CHARACTER SET OCTETS) AS RECEBTO,
+    cta.VALOR,
+    cta.TOTAL,
+    cta.JUROS,
+    cta.DESCONTO,
+    cta.VLPAGTO                                                     AS VLPAGO,
+    CAST(f.FORNECEDOR         AS VARCHAR(50)  CHARACTER SET OCTETS) AS FORNECEDOR,
+    cta.CDFORNECEDOR,
+    CAST(cta.CDCONTA          AS VARCHAR(3)   CHARACTER SET OCTETS) AS CDCONTA1,
+    CAST(c1.CONTA             AS VARCHAR(50)  CHARACTER SET OCTETS) AS CONTA1,
+    CAST(cta.CDSUBCONTA       AS VARCHAR(5)   CHARACTER SET OCTETS) AS CDCONTA2,
+    CAST(c2.SUBCONTA          AS VARCHAR(50)  CHARACTER SET OCTETS) AS CONTA2,
+    CAST(cta.CDSUBSUBCONTA    AS VARCHAR(5)   CHARACTER SET OCTETS) AS CDCONTA3,
+    CAST(c3.SUBSUBCONTA       AS VARCHAR(50)  CHARACTER SET OCTETS) AS CONTA3,
+    CAST(cta.CDSUBSUBSUBCONTA AS VARCHAR(7)   CHARACTER SET OCTETS) AS CDCONTA4,
+    CAST(c4.SUBSUBSUBCONTA    AS VARCHAR(50)  CHARACTER SET OCTETS) AS CONTA4,
+    cta.STATUSVALE,
+    cta.CDCLIENTEVALE
+FROM CTAPAGAR cta
+    LEFT JOIN FORNECEDOR      f  ON (f.CDFORNECEDOR      = cta.CDFORNECEDOR)
+    LEFT JOIN RECEBTO         r  ON (r.CDRECEBTO         = cta.CODPAGTO)
+    LEFT JOIN CONTAS          c1 ON (c1.CDCONTA          = cta.CDCONTA)
+    LEFT JOIN SUBCONTAS       c2 ON (c2.CDCONTA          = cta.CDCONTA)
+                                AND (c2.CDSUBCONTA       = cta.CDSUBCONTA)
+    LEFT JOIN SUBSUBCONTAS    c3 ON (c3.CDCONTA          = cta.CDCONTA)
+                                AND (c3.CDSUBCONTA       = cta.CDSUBCONTA)
+                                AND (c3.CDSUBSUBCONTA    = cta.CDSUBSUBCONTA)
+    LEFT JOIN SUBSUBSUBCONTAS c4 ON (c4.CDCONTA          = cta.CDCONTA)
+                                AND (c4.CDSUBCONTA       = cta.CDSUBCONTA)
+                                AND (c4.CDSUBSUBCONTA    = cta.CDSUBSUBCONTA)
+                                AND (c4.CDSUBSUBSUBCONTA = cta.CDSUBSUBSUBCONTA)
+WHERE
+    cta.STATUS IN (1, 2)
+    AND cta.STATUSVALE IS NULL
+    AND COALESCE(cta.HISTORICO, '') NOT CONTAINING 'Provis'
+    AND cta.DTVENC >= DATEADD(DAY, -(EXTRACT(DAY FROM CURRENT_DATE) - 1), CURRENT_DATE)
+    AND cta.DTVENC <  DATEADD(MONTH, 3,
+                        DATEADD(DAY, -(EXTRACT(DAY FROM CURRENT_DATE) - 1), CURRENT_DATE));
