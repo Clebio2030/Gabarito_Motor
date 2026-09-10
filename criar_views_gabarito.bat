@@ -53,6 +53,21 @@ echo    Porta    : %FB_PORT%
 echo    Banco    : %FB_DATABASE%
 echo    Usuario  : %FB_USER%
 echo    Charset  : %FB_CHARSET%
+
+rem FB_DATABASE tem que ser o caminho completo do .FDB como o SERVIDOR enxerga.
+rem Um nome sem barra (ex.: "bacaxa") so conecta se existir um alias com esse
+rem nome no databases.conf do Firebird do servidor; senao o Firebird tenta abrir
+rem um arquivo relativo e o connect falha com: I/O error during "open" operation.
+set "FB_DB_SUSPEITO="
+if not defined FB_DATABASE set "FB_DB_SUSPEITO=1"
+if defined FB_DATABASE if "!FB_DATABASE:\=!"=="!FB_DATABASE!" if "!FB_DATABASE:/=!"=="!FB_DATABASE!" set "FB_DB_SUSPEITO=1"
+if defined FB_DB_SUSPEITO (
+    echo  [AVISO] FB_DATABASE nao parece um caminho de arquivo: "%FB_DATABASE%"
+    echo          Esperado o caminho completo do .FDB visto pelo SERVIDOR,
+    echo          ex.: D:\Dados\SISTEMA\BANCO.FDB  - copie do Start.ini do ERP
+    echo          e ajuste FB_DATABASE em backend\.env.
+    echo          So funciona como esta se for um alias no databases.conf.
+)
 echo.
 
 rem Procura isql.exe
@@ -88,12 +103,9 @@ echo    %ISQL%
 echo.
 
 rem Confirmacao antes de executar
-echo  ATENCAO: Este script vai criar ou recriar as views:
-echo    - GABARITO_EMPRESAS
-echo    - GABARITO_FATURAMENTO_MENSAL
-echo    - GABARITO_CTAPAGAR_GERAL
-echo    - GABARITO_CTARCEBER_GERAL
-echo    - GABARITO_CURVA_ABC
+echo  ATENCAO: as views do Gabarito sao criadas/atualizadas pelo proprio
+echo  Motor no boot do servico. Este script e um reforco manual de
+echo  implantacao e um teste de conexao com o Firebird via isql.
 echo.
 set /p "CONFIRMA=  Deseja continuar? [S/N]: "
 if /i not "%CONFIRMA%"=="S" goto :FIM_CANCELADO
@@ -104,7 +116,7 @@ echo.
 echo  Executando script SQL...
 echo  ----------------------------------------------------------
 
-"%ISQL%" -user "%FB_USER%" -password "%FB_PASSWORD%" -ch %FB_CHARSET% %FB_HOST%/%FB_PORT%:%FB_DATABASE% -i "%SQL_FILE%" > "%LOGTEMP%" 2>&1
+"%ISQL%" -user "%FB_USER%" -password "%FB_PASSWORD%" -ch %FB_CHARSET% "%FB_HOST%/%FB_PORT%:%FB_DATABASE%" -i "%SQL_FILE%" > "%LOGTEMP%" 2>&1
 
 type "%LOGTEMP%"
 
@@ -150,6 +162,19 @@ echo  Verifique:
 echo    - Firebird acessivel em %FB_HOST%:%FB_PORT%
 echo    - Usuario/senha corretos no .env
 echo    - Caminho do banco: %FB_DATABASE%
+echo.
+findstr /i "I/O error during" "%LOGTEMP%" >nul 2>&1
+if "!ERRORLEVEL!" == "0" (
+    echo  O erro acima e de CONEXAO, nao do SQL: o servidor Firebird nao
+    echo  conseguiu abrir o banco "%FB_DATABASE%".
+    echo.
+    echo  Ajuste FB_DATABASE em backend\.env para o caminho completo do
+    echo  .FDB como o SERVIDOR enxerga, ex.: D:\Dados\SISTEMA\BANCO.FDB
+    echo  -- ou registre o alias no databases.conf do Firebird do servidor.
+    echo.
+)
+echo  Log completo do isql em:
+echo    %LOGTEMP%
 echo.
 pause
 goto :EOF
