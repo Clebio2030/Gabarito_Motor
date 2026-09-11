@@ -7,6 +7,17 @@ const { logInfo, logError, logWarn } = require('../logger');
  * Aplica o SQL de views diretamente via driver Firebird do Node.
  * Mais seguro que depender do isql.exe da máquina do cliente.
  */
+/**
+ * Nome do objeto criado por um statement DDL, para o log dizer QUAL view falhou
+ * em vez de só despejar a mensagem do Firebird.
+ * @param {string} statement
+ * @returns {string}
+ */
+function nomeDoObjeto(statement) {
+  const m = statement.match(/CREATE\s+(?:OR\s+ALTER\s+)?(VIEW|PROCEDURE|TRIGGER|TABLE|INDEX)\s+([A-Z0-9_$]+)/i);
+  return m ? `${m[1].toUpperCase()} ${m[2].toUpperCase()}` : statement.slice(0, 60).replace(/\s+/g, ' ');
+}
+
 async function runDatabaseMigrations() {
   logInfo('[Database] Iniciando verificacao de migracao de banco...');
 
@@ -41,21 +52,30 @@ async function runDatabaseMigrations() {
 
     logInfo(`[Database] Aplicando ${statements.length} comandos SQL...`);
 
+    const falhas = [];
+
     for (const statement of statements) {
+      const objeto = nomeDoObjeto(statement);
       try {
         await query(statement);
       } catch (err) {
         // Se o erro for "View already exists", ignoramos se for CREATE OR ALTER (padrão)
-        // Mas logamos para depuracao
-        if (err.message.includes('already exists')) {
-            // ok
-        } else {
-            logWarn(`[Database] Erro ao executar statement: ${err.message}`);
-        }
+        if (err.message.includes('already exists')) continue;
+
+        // Uma view que não compila some da base e o recurso dela morre calado: o
+        // extractor recebe "-204 Table unknown" e não tem como dizer o porquê.
+        // Por isso o erro é ERROR (não WARN) e nomeia o objeto — é esta linha
+        // que responde "por que a view não existe neste cliente".
+        falhas.push(objeto);
+        logError(`[Database] FALHA ao criar/alterar ${objeto}: ${err.message}`);
       }
     }
 
-    logInfo('[Database] Migracao concluida com sucesso.');
+    if (falhas.length) {
+      logError(`[Database] Migracao concluida com ${falhas.length} de ${statements.length} objeto(s) COM FALHA: ${falhas.join(', ')}. Os recursos que dependem deles não serão extraídos.`);
+    } else {
+      logInfo('[Database] Migracao concluida com sucesso.');
+    }
   } catch (error) {
     logError('[Database] Falha fatal na migracao:', error);
   }

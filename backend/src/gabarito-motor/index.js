@@ -264,7 +264,13 @@ async function runMotor() {
         continue;
       }
 
-      const dadosCompletos = { faturamentoMensal, contasPagar: contasPagarTotal, contasReceber: contasReceberTotal, curvaAbc: curvaAbcTotal, entradas: entradasTotal, vendedores: vendedoresTotal, pedidosHorario: pedidosHorarioTotal, projecaoPagamento: projecaoPagamentoTotal };
+      const dadosCompletos = { faturamentoMensal, contasPagar: contasPagarTotal, contasReceber: contasReceberTotal, curvaAbc: curvaAbcTotal, entradas: entradasTotal, vendedores: vendedoresTotal, pedidosHorario: pedidosHorarioTotal };
+      // Recurso com extração FALHA fica fora do hash. Incluí-lo como [] faria o
+      // hash oscilar contra um dado que nem chegou a ser enviado; deixá-lo de
+      // fora mantém o hash estável enquanto o problema durar (o CNPJ para de
+      // reenviar os outros recursos de hora em hora) e, no ciclo em que a
+      // extração voltar, a chave reaparece com as linhas → hash muda → reenvia.
+      if (projecaoCompleta) dadosCompletos.projecaoPagamento = projecaoPagamentoTotal;
       const { changed, hash } = checkStateChanged(cnpj, dadosCompletos);
 
       // Backfill pendente força o envio mesmo com hash inalterado: a carga
@@ -315,7 +321,15 @@ async function runMotor() {
         if (pendentes.includes(campo)) backfilledAgora.push(campo);
       }
 
-      if (todosSucesso && curvaAbcCompleta && projecaoCompleta) {
+      // A projeção NÃO entra no gate do hash: ela é um recurso a mais e não pode
+      // invalidar o ciclo dos outros seis (uma view ausente fazia o CNPJ reenviar
+      // pagar+receber+curva inteiros de hora em hora). Falha dela = campo omitido
+      // no payload + este aviso; a API preserva o que já tinha.
+      if (!projecaoCompleta) {
+        logWarn(`[Gabarito] [${cnpj}] projecaoPagamento: extração falhou — campo OMITIDO no envio (a API preserva o dado anterior). Os demais recursos seguem normalmente.`);
+      }
+
+      if (todosSucesso && curvaAbcCompleta) {
         updateState(cnpj, hash);
         if (backfilledAgora.length) {
           markResourcesFullSynced(cnpj, backfilledAgora);
@@ -323,9 +337,7 @@ async function runMotor() {
         }
         logInfo(`[Gabarito] CNPJ ${cnpj}: hash salvo — próximo ciclo detectará apenas mudanças.`);
       } else {
-        const motivo = !todosSucesso ? 'falha no envio de lotes'
-          : (!curvaAbcCompleta ? 'erro na extração da Curva ABC (algum ano falhou)'
-                               : 'erro na extração da projeção de pagamento');
+        const motivo = !todosSucesso ? 'falha no envio de lotes' : 'erro na extração da Curva ABC (algum ano falhou)';
         logWarn(`[Gabarito] CNPJ ${cnpj}: hash NÃO salvo (${motivo}). Próximo ciclo reenviará tudo.`);
       }
 
@@ -374,8 +386,12 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
   let   vendedoresTotal    = await extrairVendedores(idEmpresa, desde);
   let   pedidosHorarioTotal = await extrairPedidosPorHorario(idEmpresa, desde);
   // Projeção não tem carga histórica: a janela é sempre mês corrente + 2 meses.
+  // Falha dela NÃO reprova o full sync — reprovar faria o CNPJ refazer a carga de
+  // 3 anos a cada ciclo por causa de um recurso acessório.
   let { rows: projecaoPagamentoTotal, completo: projecaoCompleta } = await extrairProjecaoPagamento(idEmpresa);
-  if (!projecaoCompleta) completo = false;
+  if (!projecaoCompleta) {
+    logWarn(`[Gabarito] [${cnpj}] (full) projecaoPagamento: extração falhou — campo OMITIDO no envio.`);
+  }
 
   logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}`);
 
