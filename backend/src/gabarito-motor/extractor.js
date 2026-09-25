@@ -543,19 +543,20 @@ async function extrairVendedores(idEmpresa, desde) {
     };
 
     return {
-      idEmpresa:         num('IDEMPRESA'),
-      cdVendedor:        num('CDVENDEDOR'),
-      nomeVend:          str('NOME_VEND'),
-      dataVenda:         dt('DATA_VENDA'),
-      totalVendas:       num('TOTAL_VENDAS'),
-      totalPedidos:      num('TOTAL_PEDIDOS'),
-      clientesAtendidos: num('CLIENTES_ATENDIDOS'),
-      ticketMedio:       num('TICKET_MEDIO'),
-      totalDesconto:     num('TOTAL_DESCONTO'),
-      totalTrocas:       num('TOTAL_TROCAS'),
-      qtdTrocas:         num('QTD_TROCAS'),
-      qtdProdutos:       num('QTD_PRODUTOS'),
-      totalCusto:        num('TOTAL_CUSTO')
+      idEmpresa:                num('IDEMPRESA'),
+      cdVendedor:               num('CDVENDEDOR'),
+      nomeVend:                 str('NOME_VEND'),
+      dataVenda:                dt('DATA_VENDA'),
+      totalVendas:              num('TOTAL_VENDAS'),
+      totalPedidos:             num('TOTAL_PEDIDOS'),
+      clientesAtendidos:        num('CLIENTES_ATENDIDOS'),
+      ticketMedio:              num('TICKET_MEDIO'),
+      totalDesconto:            num('TOTAL_DESCONTO'),
+      descontoItemIndividual:   num('DESCONTO_ITEM_INDIVIDUAL'),
+      totalTrocas:              num('TOTAL_TROCAS'),
+      qtdTrocas:                num('QTD_TROCAS'),
+      qtdProdutos:              num('QTD_PRODUTOS'),
+      totalCusto:               num('TOTAL_CUSTO')
     };
   });
 }

@@ -305,12 +305,13 @@ CREATE OR ALTER VIEW GABARITO_VENDEDORES(
     CLIENTES_ATENDIDOS,
     TICKET_MEDIO,
     TOTAL_DESCONTO,
+    DESCONTO_ITEM_INDIVIDUAL,
     TOTAL_TROCAS,
     QTD_TROCAS,
     QTD_PRODUTOS,
     TOTAL_CUSTO)
 AS
-SELECT 
+SELECT
     se.idempresa,
     V.CDVENDEDOR,
     CAST(V.VENDEDOR AS VARCHAR(50) CHARACTER SET OCTETS) AS NOME_VEND,
@@ -318,12 +319,13 @@ SELECT
     SUM(CASE WHEN se.status IN (1, 3) THEN se.vltotal ELSE 0 END) AS TOTAL_VENDAS,
     COUNT(DISTINCT CASE WHEN se.status IN (1, 3) THEN se.nrpedido END) AS TOTAL_PEDIDOS,
     COUNT(DISTINCT CASE WHEN se.status IN (1, 3) THEN se.cdcliente END)  AS CLIENTES_ATENDIDOS,
-    CASE 
-        WHEN COUNT(DISTINCT CASE WHEN se.status IN (1, 3) THEN se.nrpedido END) > 0 
+    CASE
+        WHEN COUNT(DISTINCT CASE WHEN se.status IN (1, 3) THEN se.nrpedido END) > 0
         THEN SUM(CASE WHEN se.status IN (1, 3) THEN se.vltotal ELSE 0 END) / COUNT(DISTINCT CASE WHEN se.status IN (1, 3) THEN se.nrpedido END)
         ELSE 0
     END AS TICKET_MEDIO,
     SUM(CASE WHEN se.status IN (1, 3) THEN COALESCE(se.desconto, 0) ELSE 0 END) AS TOTAL_DESCONTO,
+    SUM(CASE WHEN se.status IN (1, 3) THEN COALESCE(sp.desconto_item, 0) ELSE 0 END) AS DESCONTO_ITEM_INDIVIDUAL,
     SUM(CASE WHEN se.status IN (40, 43) THEN se.vltotal ELSE 0 END) AS TOTAL_TROCAS,
     COUNT(DISTINCT CASE WHEN se.status IN (40, 43) THEN se.nrpedido END) AS QTD_TROCAS,
     SUM(COALESCE(sp.total_itens, 0)) AS QTD_PRODUTOS,
@@ -335,7 +337,8 @@ LEFT JOIN (
         idempresa,
         nrpedido,
         SUM(qtdproduto) AS total_itens,
-        SUM(COALESCE(vlcusto, 0) * qtdproduto) AS custo_total_pedido
+        SUM(COALESCE(vlcusto, 0) * qtdproduto) AS custo_total_pedido,
+        SUM(COALESCE(desconto, 0) * qtdproduto) AS desconto_item
     FROM saidaproduto
     WHERE statusse <> 9
     GROUP BY idempresa, nrpedido
