@@ -340,7 +340,7 @@ LEFT JOIN (
     WHERE statusse <> 9
     GROUP BY idempresa, nrpedido
 ) sp ON sp.nrpedido = se.nrpedido AND sp.idempresa = se.idempresa
-WHERE se.status IN (1, 3, 40, 43) AND V.inativo = 0 
+WHERE se.status IN (1, 3, 40, 43)
 GROUP BY se.idempresa, V.CDVENDEDOR, V.VENDEDOR, CAST(se.dtsaida AS DATE);
 
 CREATE OR ALTER VIEW GABARITO_HORARIO (
