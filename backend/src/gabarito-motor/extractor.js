@@ -688,7 +688,18 @@ async function extrairProjecaoPagamento(idEmpresa) {
     completo = false;
   }
 
-  return { rows: (rows || []).map(mapProjecaoPagamentoRow), completo };
+  return {
+    rows: (rows || [])
+      .filter(r => {
+        // Filtro antes movido para a VIEW (NOT CONTAINING 'Provis'); feito aqui
+        // para evitar "Malformed string" — o Firebird lança esse erro ao comparar
+        // HISTORICO (charset ambíguo) com literal string UTF-8 da conexão.
+        const hist = String(r.HISTORICO ?? r.historico ?? '');
+        return !hist.includes('Provis');
+      })
+      .map(mapProjecaoPagamentoRow),
+    completo
+  };
 }
 
 // ── Streaming Curva ABC (Full Sync) ───────────────────────────────────────────
