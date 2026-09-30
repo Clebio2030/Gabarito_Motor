@@ -1,8 +1,8 @@
 {
-  "currentVersion": "1.10.0",
-  "lastCheckAt": "2026-09-10T11:00:02.612Z",
-  "lastUpdateAt": "2026-07-16T22:00:19.385Z",
+  "currentVersion": "1.11.0",
+  "lastCheckAt": "2026-09-29T22:00:01.786Z",
+  "lastUpdateAt": "2026-09-25T11:00:19.396Z",
   "lastStatus": "up-to-date",
-  "lastReleaseTag": "v1.9.5",
+  "lastReleaseTag": "v1.11.0",
   "lastError": null
 }
