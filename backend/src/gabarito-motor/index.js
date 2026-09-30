@@ -18,8 +18,8 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.e
 const cron = require('node-cron');
 const crypto = require('crypto');
 const { logInfo, logWarn, logError } = require('../logger');
-const { buscarCnpjsAtivos, enviarSync } = require('./sender');
-const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario, extrairProjecaoPagamento } = require('./extractor');
+const { buscarEmpresasAtivas, enviarSync } = require('./sender');
+const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario, extrairProjecaoPagamento, extrairOrcamentos, limitarDesdeOrcamentos } = require('./extractor');
 const { checkStateChanged, getLastSyncedAt, updateState, getFullSyncedResources, markResourcesFullSynced, WINDOWED_RESOURCES } = require('./syncState');
 const { runDatabaseMigrations } = require('./migrations');
 
@@ -39,8 +39,20 @@ const SEND_EXPECTED_TOTAL = process.env.GABARITO_EXPECTED_TOTAL !== 'false';
 // payload com 400 multi_resource_payload; ele segue sempre pelo caminho legado.
 const RECURSOS_STAGING = new Set([
   'contasPagar', 'contasReceber', 'curvaAbc', 'entradas', 'vendedores', 'pedidosHorario',
-  'projecaoPagamento'
+  'projecaoPagamento', 'orcamentos'
 ]);
+
+/**
+ * Recursos com janela ATIVOS para um CNPJ. `orcamentos` só existe com o toggle
+ * `orcamentosEnabled` da API: fora dele, não pode contar como "carga histórica
+ * pendente" (forçaria reenvio de tudo todo ciclo) nem ser carimbado como
+ * carregado (o CNPJ perderia o backfill de 3 anos quando o toggle ligasse).
+ * @param {boolean} orcamentosOn
+ * @returns {string[]}
+ */
+function recursosComJanela(orcamentosOn) {
+  return WINDOWED_RESOURCES.filter(r => r !== 'orcamentos' || orcamentosOn);
+}
 
 let isMotorRunning = false;
 
@@ -163,7 +175,9 @@ async function runMotor() {
   let semDados    = 0;
 
   try {
-    const cnpjsAtivos = await buscarCnpjsAtivos();
+    const empresasAtivas   = await buscarEmpresasAtivas();
+    const cnpjsAtivos      = empresasAtivas.map(e => e.cnpj);
+    const orcamentosOnPara = new Set(empresasAtivas.filter(e => e.orcamentosEnabled).map(e => e.cnpj));
 
     if (!cnpjsAtivos.length) {
       logWarn('[Gabarito] Nenhum CNPJ ativo retornado pela API. Ciclo encerrado.');
@@ -179,12 +193,14 @@ async function runMotor() {
       const isIncrementalSync = lastSyncedAt !== null;
       const desde             = computarDesde(lastSyncedAt);
       const modoSync          = isIncrementalSync ? 'incremental' : 'full';
+      const orcamentosOn      = orcamentosOnPara.has(cnpj);
+      const janelaAtiva       = recursosComJanela(orcamentosOn);
 
       logInfo(`[Gabarito] Processando CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) — modo: ${modoSync}, desde: ${desde}`);
 
       // ── FULL SYNC: streaming por ano (memória limitada) ──────────────────────
       if (!isIncrementalSync) {
-        const r = await runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente);
+        const r = await runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, orcamentosOn);
         if (r.todosSucesso && r.completo) {
           // Hash sentinela: marca lastSyncedAt para os próximos ciclos serem
           // incrementais. O 1º incremental sempre reenviará (hash de 2 meses
@@ -192,7 +208,9 @@ async function runMotor() {
           updateState(cnpj, `full-${hojeFormatado()}`);
           // O full sync carregou os 3 anos de todos os recursos com janela —
           // carimba o watermark para o incremental não os recarregar.
-          markResourcesFullSynced(cnpj, WINDOWED_RESOURCES);
+          // Orçamentos só entram no carimbo se foram de fato enviados (toggle
+          // ligado E extração OK) — senão o backfill fica pendente p/ o incremental.
+          markResourcesFullSynced(cnpj, janelaAtiva.filter(rec => rec !== 'orcamentos' || r.orcamentosEnviado));
           logInfo(`[Gabarito] CNPJ ${cnpj}: full sync concluído — hash salvo.`);
           processados++;
         } else {
@@ -207,7 +225,7 @@ async function runMotor() {
       // extraído com a janela completa (3 anos) UMA vez; depois cai no incremental
       // de 3 meses. Torna a adição de relatórios novos auto-corretiva.
       const backfilled     = new Set(getFullSyncedResources(cnpj));
-      const pendentes      = WINDOWED_RESOURCES.filter(r => !backfilled.has(r));
+      const pendentes      = janelaAtiva.filter(r => !backfilled.has(r));
       const desdeHistorico = computarDesde(null); // 3 anos — carga histórica única
       const desdeDe = (recurso) =>
         (WINDOWED_RESOURCES.includes(recurso) && !backfilled.has(recurso)) ? desdeHistorico : desde;
@@ -231,12 +249,22 @@ async function runMotor() {
       const pedidosHorarioTotal = await extrairPedidosPorHorario(idEmpresa, desdeDe('pedidosHorario'));
       logInfo(`[Gabarito] [${cnpj}] Extraindo projeção de pagamento (janela ${projecaoDesde} + 3 meses)...`);
       const { rows: projecaoPagamentoTotal, completo: projecaoCompleta } = await extrairProjecaoPagamento(idEmpresa);
-      logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}`);
+      // Orçamentos: só com o toggle da API ligado para este CNPJ (canário
+      // server-side). Desligado = nem extrai; o recurso não existe no ciclo.
+      let orcamentosTotal = [];
+      let orcamentosCompleto = false;
+      // Histórico de orçamentos tem teto próprio (12 meses) — ver extractor.
+      const desdeOrcamentos = limitarDesdeOrcamentos(desdeDe('orcamentos'));
+      if (orcamentosOn) {
+        logInfo(`[Gabarito] [${cnpj}] Extraindo orçamentos (desde ${desdeOrcamentos})...`);
+        ({ rows: orcamentosTotal, completo: orcamentosCompleto } = await extrairOrcamentos(idEmpresa, desdeOrcamentos));
+      }
+      logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}${orcamentosOn ? `, orcamentos=${orcamentosTotal.length}` : ''}`);
 
       const temDados = faturamentoMensal.length > 0 || contasPagarTotal.length > 0
         || contasReceberTotal.length > 0 || curvaAbcTotal.length > 0 || entradasTotal.length > 0
         || vendedoresTotal.length > 0 || pedidosHorarioTotal.length > 0
-        || projecaoPagamentoTotal.length > 0;
+        || projecaoPagamentoTotal.length > 0 || orcamentosTotal.length > 0;
 
       if (!temDados) {
         logWarn(`[Gabarito] CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) sem dados em ${anoCorrente}.`);
@@ -259,7 +287,9 @@ async function runMotor() {
         );
         // Sem histórico a carregar (janela de 3 anos veio vazia) — marca os
         // pendentes para não reconsultar 3 anos todo ciclo neste CNPJ.
-        if (pendentes.length) markResourcesFullSynced(cnpj, pendentes);
+        // Orçamento com extração FALHA não veio "vazio": continua pendente.
+        const vazios = pendentes.filter(r => r !== 'orcamentos' || orcamentosCompleto);
+        if (vazios.length) markResourcesFullSynced(cnpj, vazios);
         processados++;
         continue;
       }
@@ -271,12 +301,17 @@ async function runMotor() {
       // reenviar os outros recursos de hora em hora) e, no ciclo em que a
       // extração voltar, a chave reaparece com as linhas → hash muda → reenvia.
       if (projecaoCompleta) dadosCompletos.projecaoPagamento = projecaoPagamentoTotal;
+      if (orcamentosCompleto) dadosCompletos.orcamentos = orcamentosTotal;
+      // Orçamento pendente de carga mas com extração falha não força envio: o
+      // resto seria reenviado de hora em hora por causa dele (mesmo motivo da
+      // projeção). Volta a forçar no ciclo em que a extração passar.
+      const pendentesEnvio = pendentes.filter(r => r !== 'orcamentos' || orcamentosCompleto);
       const { changed, hash } = checkStateChanged(cnpj, dadosCompletos);
 
       // Backfill pendente força o envio mesmo com hash inalterado: a carga
       // histórica precisa chegar à API ainda que os últimos 3 meses não tenham
       // mudado desde o último ciclo.
-      if (!changed && pendentes.length === 0) {
+      if (!changed && pendentesEnvio.length === 0) {
         logInfo(`[Gabarito] CNPJ ${cnpj}: Dados inalterados. Pulando envio (hash: ${hash}).`);
         processados++;
         continue;
@@ -305,6 +340,8 @@ async function runMotor() {
         ['pedidosHorario',    pedidosHorarioTotal],
         ['projecaoPagamento', projecaoPagamentoTotal]
       ];
+      // Extração falha → campo omitido (a API preserva o que tinha).
+      if (orcamentosCompleto) recursos.push(['orcamentos', orcamentosTotal]);
 
       let todosSucesso = true;
       const backfilledAgora = [];
@@ -312,7 +349,7 @@ async function runMotor() {
         const ehProjecao  = campo === 'projecaoPagamento';
         const metaRecurso = ehProjecao
           ? metaProjecaoPagamento(baseMeta, projecaoDesde)
-          : { ...baseMeta, desde: desdeDe(campo) };
+          : { ...baseMeta, desde: campo === 'orcamentos' ? desdeOrcamentos : desdeDe(campo) };
         // Projeção vazia com extração OK vira snapshot vazio (esvazia a viva);
         // com extração falha, nada é enviado e o hash não é salvo mais abaixo.
         const opts = ehProjecao ? { enviarVazio: projecaoCompleta } : {};
@@ -327,6 +364,9 @@ async function runMotor() {
       // no payload + este aviso; a API preserva o que já tinha.
       if (!projecaoCompleta) {
         logWarn(`[Gabarito] [${cnpj}] projecaoPagamento: extração falhou — campo OMITIDO no envio (a API preserva o dado anterior). Os demais recursos seguem normalmente.`);
+      }
+      if (orcamentosOn && !orcamentosCompleto) {
+        logWarn(`[Gabarito] [${cnpj}] orcamentos: extração falhou — campo OMITIDO no envio (a API preserva o dado anterior). Os demais recursos seguem normalmente.`);
       }
 
       if (todosSucesso && curvaAbcCompleta) {
@@ -370,9 +410,9 @@ async function runMotor() {
  *      anteriores. O primeiro ano remove qualquer dado parcial antigo.
  *      Apenas um ano fica em memória por vez.
  *
- * @returns {Promise<{todosSucesso: boolean, completo: boolean}>}
+ * @returns {Promise<{todosSucesso: boolean, completo: boolean, orcamentosEnviado: boolean}>}
  */
-async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) {
+async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, orcamentosOn = false) {
   const sourceVersion = process.env.GABARITO_VERSION || '1.0.0';
   let todosSucesso = true;
   let completo     = true;
@@ -392,8 +432,19 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
   if (!projecaoCompleta) {
     logWarn(`[Gabarito] [${cnpj}] (full) projecaoPagamento: extração falhou — campo OMITIDO no envio.`);
   }
+  // Orçamentos (toggle da API): falha também NÃO reprova o full sync — o recurso
+  // fica sem carimbo e o incremental faz a carga histórica dele sozinho.
+  let orcamentosTotal = [];
+  let orcamentosCompleto = false;
+  const desdeOrcamentos = limitarDesdeOrcamentos(desde);
+  if (orcamentosOn) {
+    ({ rows: orcamentosTotal, completo: orcamentosCompleto } = await extrairOrcamentos(idEmpresa, desdeOrcamentos));
+    if (!orcamentosCompleto) {
+      logWarn(`[Gabarito] [${cnpj}] (full) orcamentos: extração falhou — campo OMITIDO no envio.`);
+    }
+  }
 
-  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}`);
+  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}${orcamentosOn ? `, orcamentos=${orcamentosTotal.length}` : ''}`);
 
   // Cada recurso como seu próprio stream (chunkInfo honesto por tabela), igual ao
   // ciclo incremental. Ver enviarRecurso().
@@ -407,20 +458,28 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
     ['pedidosHorario',    pedidosHorarioTotal],
     ['projecaoPagamento', projecaoPagamentoTotal]
   ];
+  if (orcamentosCompleto) recursosBase.push(['orcamentos', orcamentosTotal]);
 
+  let orcamentosEnviado = false;
   for (const [campo, lista] of recursosBase) {
     const ehProjecao  = campo === 'projecaoPagamento';
+    // Orçamentos levam o `desde` da janela lida (teto de 12 meses): a API apaga
+    // só dt_orc >= desde, mesmo no full.
     const metaRecurso = ehProjecao
       ? metaProjecaoPagamento(baseMeta, primeiroDiaDoMes())
-      : baseMeta;
+      : (campo === 'orcamentos' ? { ...baseMeta, desde: desdeOrcamentos } : baseMeta);
     const opts = ehProjecao ? { enviarVazio: projecaoCompleta } : {};
     const ok = await enviarRecurso(cnpj, metaRecurso, campo, lista, enviarSync, opts);
-    if (!ok) todosSucesso = false;
+    // Falha no envio de orçamentos não reprova o full sync (refaria os 3 anos de
+    // tudo a cada ciclo); sem carimbo, o incremental reenvia a carga dele.
+    if (campo === 'orcamentos') orcamentosEnviado = ok;
+    else if (!ok) todosSucesso = false;
   }
 
   // Libera os arrays base antes do streaming da curva (reduz pico de memória)
   contasPagarTotal = contasReceberTotal = entradasTotal = vendedoresTotal = pedidosHorarioTotal = null;
   projecaoPagamentoTotal = null;
+  orcamentosTotal = null;
 
   // 2) Curva ABC em streaming, um ano por vez
   await extrairCurvaAbcStreaming(idEmpresa, desde, async ({ ano, anoDesde, rows, completo: anoCompleto }) => {
@@ -444,7 +503,7 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente) 
     }
   });
 
-  return { todosSucesso, completo };
+  return { todosSucesso, completo, orcamentosEnviado };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -525,4 +584,4 @@ if (process.env.GABARITO_DISABLE_BOOTSTRAP !== 'true') {
   });
 }
 
-module.exports = { enviarRecurso };
+module.exports = { enviarRecurso, recursosComJanela };

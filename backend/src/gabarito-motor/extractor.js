@@ -703,6 +703,208 @@ async function extrairProjecaoPagamento(idEmpresa) {
   };
 }
 
+// Passo 11: Extrair Orcamentos (conversao em pedido)
+
+// SAIDAESTOQUE.STATUS que contam como pedido gerado (0 aberto, 1/3 faturado).
+// 2 = cancelado; trocas (40/42) nem entram na view.
+const PEDIDO_VALIDO    = new Set([0, 1, 3]);
+const PEDIDO_CANCELADO = 2;
+
+/** Timestamp local do ERP como ISO com o fuso da máquina ("2026-09-29T22:36:13-03:00"). */
+function isoLocal(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return null;
+  const p = (n) => String(Math.abs(n)).padStart(2, '0');
+  const off = -d.getTimezoneOffset();
+  const sinal = off >= 0 ? '+' : '-';
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+    + `${sinal}${p(Math.trunc(off / 60))}:${p(off % 60)}`;
+}
+
+function readDate(row, campo) {
+  const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
+  return (v instanceof Date && !Number.isNaN(v.getTime())) ? v : null;
+}
+
+/**
+ * Agrega as linhas da GABARITO_ORCAMENTO_PEDIDOS por orçamento.
+ *
+ * Um orçamento pode ter vários pedidos (27k com 2, até 21 na ARRUDA); o
+ * "pedido de conversão" é o válido mais antigo (PEDIDO_TS, desempate NRPEDIDO).
+ * O valor convertido soma todos os válidos — é o que de fato virou venda.
+ *
+ * @param {Array} rows  linhas cruas do driver
+ * @returns {Map<string, object>}  chave `${idEmpresa}-${nrOrcamento}`
+ */
+function agregarPedidosPorOrcamento(rows) {
+  const mapa = new Map();
+  for (const row of rows || []) {
+    const chave  = `${readNumberOrNull(row, 'IDEMPRESA')}-${readNumberOrNull(row, 'NRORCAMENTO')}`;
+    const status = readNumberOrNull(row, 'STATUS');
+    const a = mapa.get(chave) || { qtdPedidos: 0, qtdPedidosCancelados: 0, nrPedido: null, pedidoTs: null, vlPedidos: 0 };
+
+    if (status === PEDIDO_CANCELADO) {
+      a.qtdPedidosCancelados++;
+    } else if (PEDIDO_VALIDO.has(status)) {
+      a.qtdPedidos++;
+      a.vlPedidos += toNumber(row.VLTOTAL ?? row.vltotal ?? 0);
+      const ts = readDate(row, 'PEDIDO_TS');
+      const nr = readNumberOrNull(row, 'NRPEDIDO');
+      const maisAntigo = a.nrPedido === null
+        || (ts && (!a.pedidoTs || ts < a.pedidoTs || (+ts === +a.pedidoTs && nr < a.nrPedido)))
+        || (!ts && !a.pedidoTs && nr < a.nrPedido);
+      if (maisAntigo) { a.nrPedido = nr; a.pedidoTs = ts; }
+    }
+    mapa.set(chave, a);
+  }
+  return mapa;
+}
+
+/**
+ * Mapeia uma linha (item) da GABARITO_ORCAMENTOS + o agregado de pedidos do
+ * orçamento para o payload da API. Função pura — é o contrato do recurso.
+ *
+ * `situacao` vem do PEDIDO, não do ORCAMENTO.STATUS (o trigger do ERP marca
+ * finalizado sem olhar IDEMPRESA). Precedência:
+ *   CONVERTIDO       — tem pedido válido (0/1/3)
+ *   CANCELADO        — orçamento cancelado no ERP
+ *   PEDIDO_CANCELADO — gerou pedido, mas todos foram cancelados
+ *   ABERTO           — o resto
+ * A separação "venda direta × orçamento real" (minutosAtePedido) é da API.
+ *
+ * @param {object} row     linha crua do driver
+ * @param {object} [ped]   agregado de agregarPedidosPorOrcamento()
+ * @returns {object}
+ */
+function mapOrcamentoRow(row, ped) {
+  const str  = (campo) => readTextOrNull(row, campo);
+  const num  = (campo) => readNumberOrNull(row, campo);
+  const p    = ped || { qtdPedidos: 0, qtdPedidosCancelados: 0, nrPedido: null, pedidoTs: null, vlPedidos: 0 };
+
+  const statusErp  = num('STATUS_ERP');
+  const dtCancel   = readDateOnly(row, 'DTCANCELAMENTO');
+  const dtOrcTs    = readDate(row, 'DTORC_TS');
+
+  let situacao = 'ABERTO';
+  if (p.qtdPedidos > 0)                        situacao = 'CONVERTIDO';
+  else if (statusErp === 2 || dtCancel)        situacao = 'CANCELADO';
+  else if (p.qtdPedidosCancelados > 0)         situacao = 'PEDIDO_CANCELADO';
+
+  const minutosAtePedido = (p.qtdPedidos > 0 && dtOrcTs && p.pedidoTs)
+    ? Math.floor((p.pedidoTs - dtOrcTs) / 60000)
+    : null;
+
+  return {
+    srcKey:               readText(row, 'SRC_KEY'),
+    idEmpresa:            num('IDEMPRESA'),
+    nrOrcamento:          num('NRORCAMENTO'),
+    dtOrc:                readDateOnly(row, 'DTORC'),
+    dtOrcTs:              isoLocal(dtOrcTs),
+    statusErp,
+    dtCancelamento:       dtCancel,
+    situacao,
+    cdCliente:            num('CDCLIENTE'),
+    cliente:              str('CLIENTE'),
+    clienteDoc:           str('CLIENTE_DOC'),
+    clienteFone:          str('CLIENTE_FONE'),
+    clienteEmail:         str('CLIENTE_EMAIL'),
+    contato:              str('CONTATO'),
+    cdVendedor:           num('CDVENDEDOR'),
+    vendedor:             str('VENDEDOR'),
+    vendedorFone:         str('VENDEDOR_FONE'),
+    vlTotal:              num('VLTOTAL'),
+    desconto:             num('DESCONTO'),
+    subtotal:             num('SUBTOTAL'),
+    observacao:           str('OBSERVACAO'),
+    qtdPedidos:           p.qtdPedidos,
+    qtdPedidosCancelados: p.qtdPedidosCancelados,
+    nrPedido:             p.nrPedido,
+    pedidoTs:             isoLocal(p.pedidoTs),
+    vlPedidos:            Math.round(p.vlPedidos * 100) / 100,
+    minutosAtePedido,
+    itemPosic:            num('ITEM_POSIC'),
+    itemCodigo:           str('ITEM_CODIGO'),
+    itemDescricao:        str('ITEM_DESCRICAO'),
+    itemUnidade:          str('ITEM_UNIDADE'),
+    itemQtd:              num('ITEM_QTD'),
+    itemVlUnit:           num('ITEM_VL_UNIT'),
+    itemDesconto:         num('ITEM_DESCONTO'),
+    itemVlTotal:          num('ITEM_VL_TOTAL')
+  };
+}
+
+// Histórico máximo de orçamentos, mesmo na carga única de 3 anos dos demais
+// recursos. Medido na ARRUDA: 3 anos = 179k linhas e ~800 MB de heap no Motor;
+// 12 meses cabe folgado numa máquina de cliente.
+const ORCAMENTOS_HISTORICO_MESES = 12;
+
+/**
+ * `desde` efetivo de orçamentos: o mais recente entre o pedido e o teto de
+ * ORCAMENTOS_HISTORICO_MESES (1º dia do mês). É esse valor que vai no payload,
+ * para a API apagar exatamente a janela que foi lida.
+ * @param {string} desde  YYYY-MM-DD
+ * @param {Date}   [hoje]
+ * @returns {string} YYYY-MM-DD
+ */
+function limitarDesdeOrcamentos(desde, hoje = new Date()) {
+  const teto = new Date(hoje.getFullYear(), hoje.getMonth() - ORCAMENTOS_HISTORICO_MESES, 1);
+  const t = `${teto.getFullYear()}-${String(teto.getMonth() + 1).padStart(2, '0')}-01`;
+  return desde > t ? desde : t;
+}
+
+/**
+ * Busca os orçamentos (1 linha por item) de um IDEMPRESA emitidos desde `desde`,
+ * já com a conversão em pedido resolvida. Chame com o `desde` já limitado por
+ * limitarDesdeOrcamentos().
+ *
+ * Duas leituras cruzadas em memória: SAIDAESTOQUE não tem índice por
+ * NRORCAMENTO, e o JOIN dentro da view varria a tabela por orçamento (>10 min).
+ * Pedido de orçamento emitido desde `desde` tem DTSAIDA >= `desde`, então o mesmo
+ * filtro (indexado) serve às duas.
+ *
+ * Os orçamentos são lidos MÊS A MÊS e mapeados na hora: a linha crua do driver
+ * (um Buffer por coluna de texto) pesa várias vezes a mapeada, e ler a janela
+ * inteira de uma vez segurava as duas versões juntas.
+ *
+ * `completo: false` se QUALQUER leitura falhar: orçamento sem os pedidos sairia
+ * todo como ABERTO — dado errado, pior que dado ausente.
+ *
+ * @param {number} idEmpresa
+ * @param {string} desde  YYYY-MM-DD
+ * @returns {Promise<{rows: Array, completo: boolean}>}
+ */
+async function extrairOrcamentos(idEmpresa, desde) {
+  const rows = [];
+  try {
+    const pedidos = await query(
+      `SELECT * FROM GABARITO_ORCAMENTO_PEDIDOS WHERE IDEMPRESA = ? AND DTSAIDA >= ?`,
+      [idEmpresa, new Date(`${desde}T00:00:00`)]
+    );
+    const porOrcamento = agregarPedidosPorOrcamento(pedidos);
+
+    const [ano, mes, dia] = desde.split('-').map(Number);
+    const amanha = new Date(); amanha.setHours(0, 0, 0, 0); amanha.setDate(amanha.getDate() + 1);
+    let ini = new Date(ano, mes - 1, dia);
+    while (ini < amanha) {
+      const fim = new Date(ini.getFullYear(), ini.getMonth() + 1, 1);
+      const orcs = await query(
+        `SELECT * FROM GABARITO_ORCAMENTOS WHERE IDEMPRESA = ? AND DTORC >= ? AND DTORC < ? ORDER BY NRORCAMENTO, ITEM_POSIC`,
+        [idEmpresa, ini, fim]
+      );
+      for (const row of orcs || []) {
+        rows.push(mapOrcamentoRow(
+          row,
+          porOrcamento.get(`${readNumberOrNull(row, 'IDEMPRESA')}-${readNumberOrNull(row, 'NRORCAMENTO')}`)
+        ));
+      }
+      ini = fim;
+    }
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar GABARITO_ORCAMENTOS/GABARITO_ORCAMENTO_PEDIDOS (IDEMPRESA=${idEmpresa}):`, err);
+    return { rows: [], completo: false };
+  }
+  return { rows, completo: true };
+}
+
 // ── Streaming Curva ABC (Full Sync) ───────────────────────────────────────────
 
 /**
@@ -880,5 +1082,9 @@ module.exports = {
   extrairVendedores,
   extrairPedidosPorHorario,
   extrairProjecaoPagamento,
-  mapProjecaoPagamentoRow
+  mapProjecaoPagamentoRow,
+  extrairOrcamentos,
+  limitarDesdeOrcamentos,
+  agregarPedidosPorOrcamento,
+  mapOrcamentoRow
 };

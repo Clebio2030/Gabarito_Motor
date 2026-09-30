@@ -188,6 +188,21 @@ test('ON: projecaoPagamento é stagingável (leva expectedTotal e snapshotId)', 
   assert.ok(chamadas[0].snapshotId);
 });
 
+test('ON: orcamentos é stagingável (leva expectedTotal e snapshotId)', async () => {
+  const { enviarRecurso } = carregarComFlag(true);
+  const { sendFn, chamadas } = criarMock((p) =>
+    p.chunkInfo.atual === p.chunkInfo.total
+      ? { ok: true, persisted: { orcamentos: { total: 5001 } } }
+      : { ok: true });
+
+  const ok = await enviarRecurso('CNPJ1', baseMeta, 'orcamentos', linhas(5001), sendFn);
+
+  assert.equal(ok, true);
+  assert.equal(chamadas.length, 2);
+  assert.ok(chamadas.every(c => c.expectedTotal === 5001 && c.snapshotId === chamadas[0].snapshotId));
+  assert.equal(chamadas[0].desde, '2026-04-01', 'orcamentos leva o desde da janela');
+});
+
 // ── Flag OFF (legado) ───────────────────────────────────────────────────────────
 
 test('OFF: sem expectedTotal/snapshotId; segue mesmo após falha (não fail-fast)', async () => {

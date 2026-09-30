@@ -43,7 +43,16 @@ function resolverEspera(err) {
 
 // ─── Passo 1: Buscar CNPJs ativos ─────────────────────────────────────────────
 
-async function buscarCnpjsAtivos() {
+/**
+ * Empresas ativas do token, com os toggles por CNPJ que a API decide.
+ *
+ * `orcamentosEnabled` liga o recurso `orcamentos` para o CNPJ — é o canário
+ * controlado do servidor: API antiga não manda o campo → desligado, e o Motor
+ * nem extrai. Só `true` literal liga.
+ *
+ * @returns {Promise<Array<{ cnpj: string, orcamentosEnabled: boolean }>>}
+ */
+async function buscarEmpresasAtivas() {
   const url = process.env.GABARITO_COMPANIES_URL ||
               'https://gabarito.csdigitalz.com.br/api/v1/companies';
 
@@ -55,7 +64,9 @@ async function buscarCnpjsAtivos() {
       });
 
       const lista  = Array.isArray(response.data) ? response.data : [];
-      const ativos = lista.filter((c) => c.status === 'ACTIVE').map((c) => c.cnpj);
+      const ativos = lista
+        .filter((c) => c.status === 'ACTIVE')
+        .map((c) => ({ cnpj: c.cnpj, orcamentosEnabled: c.orcamentosEnabled === true }));
 
       logInfo(`[Gabarito] ${ativos.length} CNPJ(s) ativo(s) recebidos da API.`);
       return ativos;
@@ -77,6 +88,11 @@ async function buscarCnpjsAtivos() {
     }
   }
   return [];
+}
+
+/** Só os CNPJs ativos (sem os toggles). */
+async function buscarCnpjsAtivos() {
+  return (await buscarEmpresasAtivas()).map((e) => e.cnpj);
 }
 
 // ─── Enviar payload com retry ─────────────────────────────────────────────────
@@ -129,4 +145,4 @@ async function enviarSync(payload) {
   return { ok: false };
 }
 
-module.exports = { buscarCnpjsAtivos, enviarSync };
+module.exports = { buscarEmpresasAtivas, buscarCnpjsAtivos, enviarSync };

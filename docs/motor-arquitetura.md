@@ -106,7 +106,8 @@ Tudo em `backend/src/`:
 1. `GET /companies` → CNPJs ativos do token.
 2. Mapeia CNPJ → `IDEMPRESA` (query no Firebird).
 3. Por CNPJ: extrai as views (`faturamento, contasPagar, contasReceber, curvaAbc,
-   entradas, vendedores, pedidosHorario, projecaoPagamento`).
+   entradas, vendedores, pedidosHorario, projecaoPagamento` e, com o toggle
+   `orcamentosEnabled` da API ligado para o CNPJ, `orcamentos`).
    - 1ª vez (sem `lastSyncedAt`) → **full sync** (janela 3 anos, curva em streaming/ano).
    - Depois → **incremental** (janela 3 meses; recurso novo sem histórico faz backfill
      de 3 anos 1× via watermark `fullSyncedResources`).
@@ -120,12 +121,16 @@ Tudo em `backend/src/`:
 ## Contrato com a API
 
 - **Recursos stagingáveis** (entrega íntegra): `contasPagar, contasReceber, curvaAbc,
-  entradas, vendedores, pedidosHorario, projecaoPagamento`. `faturamentoMensal` **não**
+  entradas, vendedores, pedidosHorario, projecaoPagamento, orcamentos`. `faturamentoMensal` **não**
   (segue legado).
 - **`projecaoPagamento`** é o único com **janela futura** (mês corrente + 2 meses por
   `DTVENC`, definida na view) e o único que envia **snapshot vazio** (`expectedTotal: 0`)
   quando não há títulos — é assim que a tela distingue "não tem conta a pagar" de "a
   ingestão parou". Ver [recurso-projecao-pagamento.md](./recurso-projecao-pagamento.md).
+- **`orcamentos`** só é extraído/enviado com `orcamentosEnabled: true` no `GET /companies`
+  (canário por CNPJ, decidido pela API). Janela: incremental de 3 meses, carga histórica
+  com teto de 12 meses. Classificação "venda direta × orçamento real" (corte de 30 min)
+  é da API. Ver [recurso-orcamentos.md](./recurso-orcamentos.md).
 - Ativação da entrega íntegra é **por-CNPJ, controlada pela API** (toggle
   `Company.stagingSwapEnabled`) + kill switch global `STAGING_SWAP_ENABLED`.
 - Docs do contrato: [spec-entrega-integra-fluxo-caixa.md](./spec-entrega-integra-fluxo-caixa.md),

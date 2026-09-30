@@ -465,3 +465,129 @@ WHERE
     AND cta.DTVENC >= DATEADD(DAY, -(EXTRACT(DAY FROM CURRENT_DATE) - 1), CURRENT_DATE)
     AND cta.DTVENC <  DATEADD(MONTH, 3,
                         DATEADD(DAY, -(EXTRACT(DAY FROM CURRENT_DATE) - 1), CURRENT_DATE));
+
+/* Orcamentos — 1 linha por ITEM de orcamento (ORCPROD), com o cabecalho repetido.
+   A conversao em pedido vem da GABARITO_ORCAMENTO_PEDIDOS e e cruzada no Motor
+   (extractor.js), nao aqui. Ver docs/recurso-orcamentos.md.
+
+   Notas de schema (verificadas no ERP ARRUDA, FB 5.0.3, 105k orcamentos):
+   - ORCAMENTO.STATUS NAO e confiavel como "vendido": o trigger do ERP
+     TG_INSERT_SAIDAESTOQUE faz UPDATE ORCAMENTO SET STATUS = 1 filtrando so por
+     NRORCAMENTO, sem IDEMPRESA. Em base multi-empresa, gerar o pedido do orcamento
+     18505 da empresa 2 marca tambem o 18505 da empresa 1 como finalizado. O STATUS
+     vai so como STATUS_ERP, para auditoria.
+   - CLIENTE tem PK so em CDCLIENTE (cadastro compartilhado entre empresas): o JOIN
+     tambem por IDEMPRESA perdia o cliente de 16.786 dos 18.505 orcamentos da
+     empresa 2.
+   - DTORC guarda a data e HORAORC a hora (com data 30/12/1899). Sem hora, o
+     timestamp vem NULL, nunca meia-noite inventada.
+   - SRC_KEY = IDEMPRESA-NRORCAMENTO-POSIC (POSIC = PK do ORCPROD, gerador).
+     Orcamento sem item sai com POSIC 0, em 1 linha. */
+CREATE OR ALTER VIEW GABARITO_ORCAMENTOS (
+    IDEMPRESA,
+    SRC_KEY,
+    NRORCAMENTO,
+    DTORC,
+    DTORC_TS,
+    STATUS_ERP,
+    DTCANCELAMENTO,
+    CDCLIENTE,
+    CLIENTE,
+    CLIENTE_DOC,
+    CLIENTE_FONE,
+    CLIENTE_EMAIL,
+    CONTATO,
+    CDVENDEDOR,
+    VENDEDOR,
+    VENDEDOR_FONE,
+    VLTOTAL,
+    DESCONTO,
+    SUBTOTAL,
+    OBSERVACAO,
+    ITEM_POSIC,
+    ITEM_CODIGO,
+    ITEM_DESCRICAO,
+    ITEM_UNIDADE,
+    ITEM_QTD,
+    ITEM_VL_UNIT,
+    ITEM_DESCONTO,
+    ITEM_VL_TOTAL
+) AS
+SELECT
+    o.IDEMPRESA,
+    CAST(o.IDEMPRESA || '-' || o.NRORCAMENTO || '-' || COALESCE(op.POSIC, 0) AS VARCHAR(40)) AS SRC_KEY,
+    o.NRORCAMENTO,
+    o.DTORC,
+    IIF(o.HORAORC IS NULL, NULL,
+        DATEADD(SECOND,
+            CAST(EXTRACT(HOUR FROM o.HORAORC) * 3600 + EXTRACT(MINUTE FROM o.HORAORC) * 60
+                 + FLOOR(EXTRACT(SECOND FROM o.HORAORC)) AS INTEGER),
+            CAST(CAST(o.DTORC AS DATE) AS TIMESTAMP))) AS DTORC_TS,
+    o.STATUS AS STATUS_ERP,
+    o.DTCANCELAMENTO,
+    o.CDCLIENTE,
+    CAST(o.CLIENTE      AS VARCHAR(100) CHARACTER SET OCTETS) AS CLIENTE,
+    CAST(cli.CGC        AS VARCHAR(15)  CHARACTER SET OCTETS) AS CLIENTE_DOC,
+    CAST(COALESCE(
+           NULLIF(TRIM(o.TELEFONE),   ''),
+           NULLIF(TRIM(cli.WHATSAPP), ''),
+           NULLIF(TRIM(cli.CELULAR),  ''),
+           NULLIF(TRIM(cli.TELEFONE), '')
+         )              AS VARCHAR(20)  CHARACTER SET OCTETS) AS CLIENTE_FONE,
+    CAST(cli.EMAIL      AS VARCHAR(250) CHARACTER SET OCTETS) AS CLIENTE_EMAIL,
+    CAST(o.CONTATO      AS VARCHAR(70)  CHARACTER SET OCTETS) AS CONTATO,
+    o.CDVENDEDOR,
+    CAST(v.VENDEDOR     AS VARCHAR(50)  CHARACTER SET OCTETS) AS VENDEDOR,
+    CAST(COALESCE(NULLIF(TRIM(v.CELULAR), ''), NULLIF(TRIM(v.TELEFONE), ''))
+                        AS VARCHAR(15)  CHARACTER SET OCTETS) AS VENDEDOR_FONE,
+    o.VLTOTAL,
+    o.DESCONTO,
+    o.SUBTOTAL,
+    CAST(o.OBSERVACAO   AS VARCHAR(255) CHARACTER SET OCTETS) AS OBSERVACAO,
+    COALESCE(op.POSIC, 0) AS ITEM_POSIC,
+    CAST(op.CDPRODUTO   AS VARCHAR(10)  CHARACTER SET OCTETS) AS ITEM_CODIGO,
+    CAST(op.DESCRICAO   AS VARCHAR(150) CHARACTER SET OCTETS) AS ITEM_DESCRICAO,
+    CAST(op.UNID        AS VARCHAR(3)   CHARACTER SET OCTETS) AS ITEM_UNIDADE,
+    op.QTDPRODUTO AS ITEM_QTD,
+    op.VLUNIT     AS ITEM_VL_UNIT,
+    op.DESCONTO   AS ITEM_DESCONTO,
+    op.TOTAL      AS ITEM_VL_TOTAL
+FROM ORCAMENTO o
+    LEFT JOIN ORCPROD  op  ON (op.NRORCAMENTO = o.NRORCAMENTO)
+                          AND (op.IDEMPRESA   = o.IDEMPRESA)
+    LEFT JOIN VENDEDOR v   ON (v.CDVENDEDOR   = o.CDVENDEDOR)
+    LEFT JOIN CLIENTE  cli ON (cli.CDCLIENTE  = o.CDCLIENTE);
+
+/* Pedidos que nasceram de um orcamento (SAIDAESTOQUE.NRORCAMENTO > 0).
+   Separada da GABARITO_ORCAMENTOS de proposito: SAIDAESTOQUE nao tem indice
+   utilizavel por NRORCAMENTO, e o JOIN dentro da view varria a tabela inteira por
+   orcamento (mais de 10 min na ARRUDA). O Motor le esta view filtrando por
+   IDEMPRESA + DTSAIDA (indices IND_DTSAIDA e FK_SE_EMPRESA) e cruza em memoria.
+   - STATUS: 0 pedido em aberto, 1 e 3 faturado, 2 cancelado. Trocas (40/42)
+     ficam de fora. Ha ~34k pedidos cancelados que apontam para orcamento.
+   - Um orcamento pode ter varios pedidos (27k com 2, ate 21): a agregacao por
+     orcamento e feita no Motor. */
+CREATE OR ALTER VIEW GABARITO_ORCAMENTO_PEDIDOS (
+    IDEMPRESA,
+    NRORCAMENTO,
+    NRPEDIDO,
+    STATUS,
+    DTSAIDA,
+    PEDIDO_TS,
+    VLTOTAL
+) AS
+SELECT
+    s.IDEMPRESA,
+    s.NRORCAMENTO,
+    s.NRPEDIDO,
+    s.STATUS,
+    s.DTSAIDA,
+    IIF(s.HORAPED IS NULL, NULL,
+        DATEADD(SECOND,
+            CAST(EXTRACT(HOUR FROM s.HORAPED) * 3600 + EXTRACT(MINUTE FROM s.HORAPED) * 60
+                 + FLOOR(EXTRACT(SECOND FROM s.HORAPED)) AS INTEGER),
+            CAST(CAST(s.DTSAIDA AS DATE) AS TIMESTAMP))) AS PEDIDO_TS,
+    s.VLTOTAL
+FROM SAIDAESTOQUE s
+WHERE s.NRORCAMENTO > 0
+  AND s.STATUS IN (0, 1, 2, 3);

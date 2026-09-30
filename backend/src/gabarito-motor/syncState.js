@@ -20,7 +20,10 @@ const STATE_FILE_PATH = process.env.GABARITO_STATE_FILE || path.join(__dirname, 
 // Recursos extraídos por janela de data (têm parâmetro `desde`). Só esses
 // participam do watermark por recurso — os demais (contasPagar/receber,
 // faturamentoMensal) são snapshots completos e não têm "carga histórica".
-const WINDOWED_RESOURCES = ['curvaAbc', 'entradas', 'vendedores', 'pedidosHorario'];
+// `orcamentos` só é extraído com o toggle da API ligado para o CNPJ — o
+// index.js filtra esta lista por CNPJ para não carimbar nem cobrar carga
+// histórica de um recurso que não foi enviado.
+const WINDOWED_RESOURCES = ['curvaAbc', 'entradas', 'vendedores', 'pedidosHorario', 'orcamentos'];
 
 // Recursos com janela que JÁ existiam antes do watermark por recurso. Para CNPJs
 // já sincronizados (estado legado, sem `fullSyncedResources`), assumimos que a
