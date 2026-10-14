@@ -40,3 +40,4 @@ Thumbs.db
 backend/sync_state.json
 backend/logs/
 .claude/
+*.zip

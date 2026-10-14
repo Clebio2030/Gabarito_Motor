@@ -137,6 +137,11 @@ Tudo em `backend/src/`:
   extraído/enviado com `faturamentoMunicipioEnabled: true` no `GET /companies`. Recurso
   mensal com janela: incremental de 3 meses, carga histórica de 3 anos, `desde` sempre
   no 1º dia do mês. Ver [recurso-faturamento-municipio.md](./recurso-faturamento-municipio.md).
+- **Reenvio completo sob demanda:** `resyncToken` (string opaca) no `GET /companies`.
+  Token diferente do último cumprido (`resyncApplied` em `sync_state.json`) → o
+  ciclo ignora o hash e reenvia todos os recursos na janela normal (3 meses). Só é
+  carimbado com todos os recursos OK; falha → tenta de novo no próximo ciclo. A API
+  escalona a frota trocando o token por grupo de CNPJs. Campo ausente → nada muda.
 - Ativação da entrega íntegra é **por-CNPJ, controlada pela API** (toggle
   `Company.stagingSwapEnabled`) + kill switch global `STAGING_SWAP_ENABLED`.
 - Docs do contrato: [spec-entrega-integra-fluxo-caixa.md](./spec-entrega-integra-fluxo-caixa.md),

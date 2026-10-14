@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const { logInfo, logWarn, logError } = require('../logger');
 const { buscarEmpresasAtivas, enviarSync } = require('./sender');
 const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario, extrairProjecaoPagamento, extrairOrcamentos, limitarDesdeOrcamentos, extrairFaturamentoMunicipio, inicioDoMes } = require('./extractor');
-const { checkStateChanged, getLastSyncedAt, updateState, getFullSyncedResources, markResourcesFullSynced, WINDOWED_RESOURCES } = require('./syncState');
+const { checkStateChanged, getLastSyncedAt, updateState, getFullSyncedResources, markResourcesFullSynced, getResyncApplied, markResyncApplied, WINDOWED_RESOURCES } = require('./syncState');
 const { runDatabaseMigrations } = require('./migrations');
 
 const CHUNK_SIZE = 5000;
@@ -183,6 +183,7 @@ async function runMotor() {
     const cnpjsAtivos      = empresasAtivas.map(e => e.cnpj);
     const orcamentosOnPara = new Set(empresasAtivas.filter(e => e.orcamentosEnabled).map(e => e.cnpj));
     const municipioOnPara  = new Set(empresasAtivas.filter(e => e.faturamentoMunicipioEnabled).map(e => e.cnpj));
+    const resyncTokenPara  = new Map(empresasAtivas.filter(e => e.resyncToken).map(e => [e.cnpj, e.resyncToken]));
 
     if (!cnpjsAtivos.length) {
       logWarn('[Gabarito] Nenhum CNPJ ativo retornado pela API. Ciclo encerrado.');
@@ -204,6 +205,8 @@ async function runMotor() {
         ...(orcamentosOn ? ['orcamentos'] : []),
         ...(municipioOn ? ['faturamentoMunicipio'] : [])
       ]));
+      const resyncToken       = resyncTokenPara.get(cnpj) ?? null;
+      const resyncPendente    = precisaResync(resyncToken, getResyncApplied(cnpj));
 
       logInfo(`[Gabarito] Processando CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) — modo: ${modoSync}, desde: ${desde}`);
 
@@ -222,6 +225,8 @@ async function runMotor() {
           markResourcesFullSynced(cnpj, janelaAtiva.filter(rec =>
             (rec !== 'orcamentos' || r.orcamentosEnviado) &&
             (rec !== 'faturamentoMunicipio' || r.faturamentoMunicipioEnviado)));
+          // A carga completa já cobre qualquer reenvio pedido pela API.
+          if (resyncPendente) markResyncApplied(cnpj, resyncToken);
           logInfo(`[Gabarito] CNPJ ${cnpj}: full sync concluído — hash salvo.`);
           processados++;
         } else {
@@ -334,7 +339,12 @@ async function runMotor() {
       // Backfill pendente força o envio mesmo com hash inalterado: a carga
       // histórica precisa chegar à API ainda que os últimos 3 meses não tenham
       // mudado desde o último ciclo.
-      if (!changed && pendentesEnvio.length === 0) {
+      // Reenvio pedido pela API (resyncToken novo) também força: corrige entregas
+      // cujo hash foi salvo sem a API ter gravado. Usa a janela normal (3 meses).
+      if (resyncPendente) {
+        logInfo(`[Gabarito] [${cnpj}] Reenvio completo pedido pela API (resyncToken ${resyncToken}) — ignorando hash, desde ${desde}.`);
+      }
+      if (!changed && pendentesEnvio.length === 0 && !resyncPendente) {
         logInfo(`[Gabarito] CNPJ ${cnpj}: Dados inalterados. Pulando envio (hash: ${hash}).`);
         processados++;
         continue;
@@ -405,6 +415,10 @@ async function runMotor() {
 
       if (todosSucesso && curvaAbcCompleta) {
         updateState(cnpj, hash);
+        if (resyncPendente) {
+          markResyncApplied(cnpj, resyncToken);
+          logInfo(`[Gabarito] [${cnpj}] Reenvio completo concluído (resyncToken ${resyncToken}).`);
+        }
         if (backfilledAgora.length) {
           markResourcesFullSynced(cnpj, backfilledAgora);
           logInfo(`[Gabarito] [${cnpj}] Carga histórica concluída: ${backfilledAgora.join(', ')}.`);
@@ -605,6 +619,16 @@ function metaProjecaoPagamento(baseMeta, desde) {
   return { ...baseMeta, syncMode: 'full', desde };
 }
 
+/**
+ * Reenvio completo pendente? Só quando a API manda um token e ele difere do
+ * último cumprido. Sem token (API antiga / toggle desligado) → nunca.
+ * @param {string|null} token    resyncToken atual da API
+ * @param {string|null} aplicado último token cumprido (sync_state.json)
+ */
+function precisaResync(token, aplicado) {
+  return !!token && token !== aplicado;
+}
+
 function agendarProximoCiclo() {
   logInfo('[Gabarito] Proximo ciclo em 60 minutos (se dentro da janela 08h-22h).');
 }
@@ -635,4 +659,4 @@ if (process.env.GABARITO_DISABLE_BOOTSTRAP !== 'true') {
   });
 }
 
-module.exports = { enviarRecurso, recursosComJanela };
+module.exports = { enviarRecurso, recursosComJanela, precisaResync };

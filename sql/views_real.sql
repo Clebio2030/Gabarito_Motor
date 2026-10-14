@@ -60,7 +60,9 @@ GROUP BY
      - UF = UF do cadastro do municipio (coerente com o IBGE); a UF digitada
        no pedido so vale quando o municipio nao tem UF.
      - BAIRRO e texto livre ("Centro", "CENTRO "): TRIM + caixa alta.
-     - CDMUNICIPIOIBGE fora de 7 digitos vira null. */
+     - CDMUNICIPIOIBGE fora de 7 digitos vira null.
+   - CDVENDEDOR/NOME_VENDEDOR e CDCLIENTE/CLIENTE permitem desdobrar o mapa
+     por vendedor e por cliente sem join extra no Motor. */
 CREATE OR ALTER VIEW GABARITO_FATURAMENTO_MUNICIPIO (
   IDEMPRESA,
   ANO,
@@ -71,6 +73,10 @@ CREATE OR ALTER VIEW GABARITO_FATURAMENTO_MUNICIPIO (
   UF_MUNICIPIO,
   UF_PEDIDO,
   BAIRRO,
+  CDVENDEDOR,
+  NOME_VENDEDOR,
+  CDCLIENTE,
+  CLIENTE,
   SUBTOTAL,
   DESCONTO,
   TOTAL,
@@ -85,11 +91,15 @@ SELECT
     EXTRACT(YEAR FROM se.DTSAIDA)                                                       AS ANO,
     EXTRACT(MONTH FROM se.DTSAIDA)                                                      AS MES,
     se.CDMUNICIPIO,
-    CAST(m.MUNICIPIO       AS VARCHAR(35) CHARACTER SET OCTETS)                         AS MUNICIPIO,
-    CAST(m.CDMUNICIPIOIBGE AS VARCHAR(7)  CHARACTER SET OCTETS)                         AS CDMUNICIPIOIBGE,
-    CAST(m.UF              AS VARCHAR(2)  CHARACTER SET OCTETS)                         AS UF_MUNICIPIO,
-    CAST(se.UF             AS VARCHAR(2)  CHARACTER SET OCTETS)                         AS UF_PEDIDO,
-    CAST(se.BAIRRO         AS VARCHAR(60) CHARACTER SET OCTETS)                         AS BAIRRO,
+    CAST(m.MUNICIPIO       AS VARCHAR(35)  CHARACTER SET OCTETS)                        AS MUNICIPIO,
+    CAST(m.CDMUNICIPIOIBGE AS VARCHAR(7)   CHARACTER SET OCTETS)                        AS CDMUNICIPIOIBGE,
+    CAST(m.UF              AS VARCHAR(2)   CHARACTER SET OCTETS)                        AS UF_MUNICIPIO,
+    CAST(se.UF             AS VARCHAR(2)   CHARACTER SET OCTETS)                        AS UF_PEDIDO,
+    CAST(se.BAIRRO         AS VARCHAR(100) CHARACTER SET OCTETS)                        AS BAIRRO,
+    se.CDVENDEDOR,
+    CAST(v.VENDEDOR        AS VARCHAR(100) CHARACTER SET OCTETS)                        AS NOME_VENDEDOR,
+    se.CDCLIENTE,
+    CAST(se.CLIENTE        AS VARCHAR(100) CHARACTER SET OCTETS)                        AS CLIENTE,
     SUM(CASE WHEN se.STATUS IN (1, 3)   THEN se.SUBTOTAL ELSE 0 END)                    AS SUBTOTAL,
     SUM(CASE WHEN se.STATUS IN (1, 3)   THEN se.DESCONTO ELSE 0 END)                    AS DESCONTO,
     SUM(CASE WHEN se.STATUS IN (1, 3)   THEN se.VLTOTAL  ELSE 0 END)                    AS TOTAL,
@@ -101,6 +111,7 @@ SELECT
 FROM
     saidaestoque se
     LEFT JOIN MUNICIPIO m ON m.CDMUNICIPIO = se.CDMUNICIPIO
+    LEFT JOIN VENDEDOR  v ON v.CDVENDEDOR  = se.CDVENDEDOR
 WHERE
     se.STATUS IN (1, 3, 40, 43)
 GROUP BY
@@ -108,11 +119,15 @@ GROUP BY
     EXTRACT(YEAR FROM se.DTSAIDA),
     EXTRACT(MONTH FROM se.DTSAIDA),
     se.CDMUNICIPIO,
-    CAST(m.MUNICIPIO       AS VARCHAR(35) CHARACTER SET OCTETS),
-    CAST(m.CDMUNICIPIOIBGE AS VARCHAR(7)  CHARACTER SET OCTETS),
-    CAST(m.UF              AS VARCHAR(2)  CHARACTER SET OCTETS),
-    CAST(se.UF             AS VARCHAR(2)  CHARACTER SET OCTETS),
-    CAST(se.BAIRRO         AS VARCHAR(60) CHARACTER SET OCTETS);
+    CAST(m.MUNICIPIO       AS VARCHAR(35)  CHARACTER SET OCTETS),
+    CAST(m.CDMUNICIPIOIBGE AS VARCHAR(7)   CHARACTER SET OCTETS),
+    CAST(m.UF              AS VARCHAR(2)   CHARACTER SET OCTETS),
+    CAST(se.UF             AS VARCHAR(2)   CHARACTER SET OCTETS),
+    CAST(se.BAIRRO         AS VARCHAR(100) CHARACTER SET OCTETS),
+    se.CDVENDEDOR,
+    CAST(v.VENDEDOR        AS VARCHAR(100) CHARACTER SET OCTETS),
+    se.CDCLIENTE,
+    CAST(se.CLIENTE        AS VARCHAR(100) CHARACTER SET OCTETS);
 
 CREATE OR ALTER VIEW GABARITO_CTAPAGAR_GERAL (
     IDEMPRESA,

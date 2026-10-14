@@ -53,7 +53,12 @@ function resolverEspera(err) {
  * `faturamentoMunicipioEnabled` faz o mesmo para o recurso `faturamentoMunicipio`
  * (mapa de faturamento por município/bairro).
  *
- * @returns {Promise<Array<{ cnpj: string, orcamentosEnabled: boolean, faturamentoMunicipioEnabled: boolean }>>}
+ * `resyncToken` (string opaca, opcional) pede UM reenvio completo do CNPJ
+ * ignorando o hash: o Motor reenvia quando o token difere do último cumprido
+ * (sync_state.json). A API escalona a frota trocando o token por grupo de CNPJs.
+ * API antiga / campo ausente → null, nada muda.
+ *
+ * @returns {Promise<Array<{ cnpj: string, orcamentosEnabled: boolean, faturamentoMunicipioEnabled: boolean, resyncToken: string|null }>>}
  */
 async function buscarEmpresasAtivas() {
   const url = process.env.GABARITO_COMPANIES_URL ||
@@ -72,7 +77,8 @@ async function buscarEmpresasAtivas() {
         .map((c) => ({
           cnpj: c.cnpj,
           orcamentosEnabled: c.orcamentosEnabled === true,
-          faturamentoMunicipioEnabled: c.faturamentoMunicipioEnabled === true
+          faturamentoMunicipioEnabled: c.faturamentoMunicipioEnabled === true,
+          resyncToken: (typeof c.resyncToken === 'string' && c.resyncToken.trim()) ? c.resyncToken.trim() : null
         }));
 
       logInfo(`[Gabarito] ${ativos.length} CNPJ(s) ativo(s) recebidos da API.`);

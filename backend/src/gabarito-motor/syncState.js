@@ -7,7 +7,10 @@ const { logError } = require('../logger');
 const STATE_FILE_PATH = process.env.GABARITO_STATE_FILE || path.join(__dirname, '..', '..', 'sync_state.json');
 
 // Formato do estado por CNPJ:
-// { hash: string, lastSyncedAt: string|null, fullSyncedResources?: string[] }
+// { hash: string, lastSyncedAt: string|null, fullSyncedResources?: string[], resyncApplied?: string }
+//
+// `resyncApplied` é o último `resyncToken` (toggle da API em GET /companies) que
+// o CNPJ já cumpriu — ver getResyncApplied().
 //
 // `fullSyncedResources` é o watermark POR RECURSO: lista dos recursos com janela
 // que já receberam a carga histórica completa (3 anos). Um recurso ausente dessa
@@ -108,8 +111,35 @@ function updateState(cnpj, newHash) {
   state[cnpj] = {
     hash: newHash,
     lastSyncedAt: new Date().toISOString(),
-    fullSyncedResources: anterior.fullSyncedResources
+    fullSyncedResources: anterior.fullSyncedResources,
+    resyncApplied: anterior.resyncApplied
   };
+  saveState(state);
+}
+
+/**
+ * Último `resyncToken` da API já cumprido pelo CNPJ (null se nenhum).
+ * Token da API diferente deste = reenvio completo pendente, ignorando o hash.
+ * @param {string} cnpj
+ * @returns {string|null}
+ */
+function getResyncApplied(cnpj) {
+  const state = loadState();
+  return state[cnpj]?.resyncApplied ?? null;
+}
+
+/**
+ * Carimba o `resyncToken` como cumprido. Só chamar depois de TODOS os recursos do
+ * ciclo entregues com sucesso (mesmo gate do hash) — senão o reenvio pedido pela
+ * API se perderia numa entrega parcial.
+ * @param {string} cnpj
+ * @param {string} token
+ */
+function markResyncApplied(cnpj, token) {
+  const state = loadState();
+  const entry = state[cnpj] || { hash: null, lastSyncedAt: null };
+  entry.resyncApplied = token;
+  state[cnpj] = entry;
   saveState(state);
 }
 
@@ -152,5 +182,7 @@ module.exports = {
   updateState,
   getFullSyncedResources,
   markResourcesFullSynced,
+  getResyncApplied,
+  markResyncApplied,
   WINDOWED_RESOURCES
 };
