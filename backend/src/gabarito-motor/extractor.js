@@ -905,6 +905,128 @@ async function extrairOrcamentos(idEmpresa, desde) {
   return { rows, completo: true };
 }
 
+// Passo 12: Extrair Faturamento por Municipio (mapa de faturamento)
+
+// Código IBGE de município: 7 dígitos. O cadastro do ERP tem lixo ('1', '') —
+// fora do padrão vira null (descarta-se o VALOR, nunca a linha).
+const IBGE_MUNICIPIO = /^\d{7}$/;
+const CAMPOS_SOMA_MUNICIPIO = [
+  'subtotal', 'desconto', 'total', 'subtotalTroca', 'descontoTroca', 'totalTroca', 'qtdVendas', 'qtdTrocas'
+];
+
+/**
+ * 1º dia do mês de `desde` (YYYY-MM-DD). O recurso é mensal: uma janela que
+ * começasse no meio do mês mandaria o mês de borda pela metade, e a API apagaria
+ * o mês inteiro para gravar só parte dele.
+ * @param {string} desde  YYYY-MM-DD
+ * @returns {string} YYYY-MM-01
+ */
+function inicioDoMes(desde) {
+  return `${desde.slice(0, 7)}-01`;
+}
+
+/**
+ * Texto livre como chave de agrupamento: o ERP guarda "Centro", "CENTRO ",
+ * "centro". A normalização é toda aqui, depois do WIN1252: na view, qualquer
+ * TRIM/UPPER sobre coluna NONE dá "Malformed string" pelo driver.
+ * @param {string} s
+ * @returns {string}  '' quando vazio
+ */
+function normalizarTexto(s) {
+  return String(s ?? '').replace(/\s+/g, ' ').trim().toLocaleUpperCase('pt-BR');
+}
+
+/**
+ * Mapeia uma linha da GABARITO_FATURAMENTO_MUNICIPIO para o payload da API.
+ * Função pura (sem banco): é o contrato de campos do recurso.
+ * @param {object} row  linha crua do driver
+ * @returns {object}
+ */
+function mapFaturamentoMunicipioRow(row) {
+  const num = (campo) => toNumber(row[campo] ?? row[campo.toLowerCase()] ?? 0);
+  const idEmpresa   = num('IDEMPRESA');
+  const ano         = num('ANO');
+  const mes         = num('MES');
+  // UF do cadastro do município (coerente com o IBGE); a digitada no pedido só
+  // quando o município não tem UF.
+  const uf          = normalizarTexto(readText(row, 'UF_MUNICIPIO'))
+                   || normalizarTexto(readText(row, 'UF_PEDIDO'))
+                   || 'SEM UF';
+  const cdMunicipio = readNumberOrNull(row, 'CDMUNICIPIO');
+  const ibge        = readText(row, 'CDMUNICIPIOIBGE');
+  const bairro      = normalizarTexto(readText(row, 'BAIRRO')) || 'SEM BAIRRO';
+
+  return {
+    // Chave natural, única por CNPJ. UF entra porque, sem município, é ela que
+    // separa as linhas.
+    srcKey:          `${idEmpresa}-${ano}-${mes}-${uf}-${cdMunicipio ?? 0}-${bairro}`,
+    idEmpresa,
+    ano,
+    mes,
+    uf,
+    cdMunicipio,
+    municipio:       readTextOrNull(row, 'MUNICIPIO'),
+    cdMunicipioIbge: IBGE_MUNICIPIO.test(ibge) ? ibge : null,
+    bairro,
+    subtotal:        num('SUBTOTAL'),
+    desconto:        num('DESCONTO'),
+    total:           num('TOTAL'),
+    subtotalTroca:   num('SUBTOTAL_TROCA'),
+    descontoTroca:   num('DESCONTO_TROCA'),
+    totalTroca:      num('TOTAL_TROCA'),
+    qtdVendas:       num('QTD_VENDAS'),
+    qtdTrocas:       num('QTD_TROCAS')
+  };
+}
+
+/**
+ * Soma as linhas que caem na mesma chave depois da normalização ("Centro" e
+ * "CENTRO " chegam separadas da view, assim como pedidos do mesmo município com
+ * UF digitada diferente). Os contadores somam sem erro: cada pedido cai numa
+ * única linha (SAIDAESTOQUE é 1 linha por pedido).
+ * Sem isso a API receberia chave natural duplicada.
+ * @param {object[]} linhas  já mapeadas
+ * @returns {object[]}
+ */
+function agregarFaturamentoMunicipio(linhas) {
+  const porChave = new Map();
+  for (const l of linhas) {
+    const atual = porChave.get(l.srcKey);
+    if (!atual) { porChave.set(l.srcKey, { ...l }); continue; }
+    for (const c of CAMPOS_SOMA_MUNICIPIO) atual[c] += l[c];
+  }
+  return [...porChave.values()];
+}
+
+/**
+ * Faturamento mensal por município/bairro de um IDEMPRESA, desde o mês de
+ * `desde`. Chame com o `desde` já alinhado por inicioDoMes().
+ *
+ * O filtro por IDEMPRESA desce para o índice FK_SE_EMPRESA; o de ANO/MES é sobre
+ * o agrupamento. Medido na ARRUDA: 3 anos da maior empresa em ~3 s (5 mil linhas).
+ *
+ * `completo: false` se a leitura falhar — aí o campo é omitido do envio, para a
+ * API não apagar a janela e gravar nada no lugar.
+ *
+ * @param {number} idEmpresa
+ * @param {string} desde  YYYY-MM-01
+ * @returns {Promise<{rows: Array, completo: boolean}>}
+ */
+async function extrairFaturamentoMunicipio(idEmpresa, desde) {
+  const [ano, mes] = desde.split('-').map(Number);
+  let rows;
+  try {
+    rows = await query(
+      `SELECT * FROM GABARITO_FATURAMENTO_MUNICIPIO WHERE IDEMPRESA = ? AND ANO * 100 + MES >= ? ORDER BY ANO, MES`,
+      [idEmpresa, ano * 100 + mes]
+    );
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar GABARITO_FATURAMENTO_MUNICIPIO (IDEMPRESA=${idEmpresa}):`, err);
+    return { rows: [], completo: false };
+  }
+  return { rows: agregarFaturamentoMunicipio((rows || []).map(mapFaturamentoMunicipioRow)), completo: true };
+}
+
 // ── Streaming Curva ABC (Full Sync) ───────────────────────────────────────────
 
 /**
@@ -1086,5 +1208,9 @@ module.exports = {
   extrairOrcamentos,
   limitarDesdeOrcamentos,
   agregarPedidosPorOrcamento,
-  mapOrcamentoRow
+  mapOrcamentoRow,
+  extrairFaturamentoMunicipio,
+  mapFaturamentoMunicipioRow,
+  agregarFaturamentoMunicipio,
+  inicioDoMes
 };

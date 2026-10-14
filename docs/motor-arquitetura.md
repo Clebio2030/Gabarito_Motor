@@ -106,8 +106,9 @@ Tudo em `backend/src/`:
 1. `GET /companies` → CNPJs ativos do token.
 2. Mapeia CNPJ → `IDEMPRESA` (query no Firebird).
 3. Por CNPJ: extrai as views (`faturamento, contasPagar, contasReceber, curvaAbc,
-   entradas, vendedores, pedidosHorario, projecaoPagamento` e, com o toggle
-   `orcamentosEnabled` da API ligado para o CNPJ, `orcamentos`).
+   entradas, vendedores, pedidosHorario, projecaoPagamento` e, com os toggles
+   `orcamentosEnabled` / `faturamentoMunicipioEnabled` da API ligados para o CNPJ,
+   `orcamentos` / `faturamentoMunicipio`).
    - 1ª vez (sem `lastSyncedAt`) → **full sync** (janela 3 anos, curva em streaming/ano).
    - Depois → **incremental** (janela 3 meses; recurso novo sem histórico faz backfill
      de 3 anos 1× via watermark `fullSyncedResources`).
@@ -121,7 +122,8 @@ Tudo em `backend/src/`:
 ## Contrato com a API
 
 - **Recursos stagingáveis** (entrega íntegra): `contasPagar, contasReceber, curvaAbc,
-  entradas, vendedores, pedidosHorario, projecaoPagamento, orcamentos`. `faturamentoMensal` **não**
+  entradas, vendedores, pedidosHorario, projecaoPagamento, orcamentos, faturamentoMunicipio`.
+  `faturamentoMensal` **não**
   (segue legado).
 - **`projecaoPagamento`** é o único com **janela futura** (mês corrente + 2 meses por
   `DTVENC`, definida na view) e o único que envia **snapshot vazio** (`expectedTotal: 0`)
@@ -131,6 +133,10 @@ Tudo em `backend/src/`:
   (canário por CNPJ, decidido pela API). Janela: incremental de 3 meses, carga histórica
   com teto de 12 meses. Classificação "venda direta × orçamento real" (corte de 30 min)
   é da API. Ver [recurso-orcamentos.md](./recurso-orcamentos.md).
+- **`faturamentoMunicipio`** (mapa de faturamento por município/bairro) só é
+  extraído/enviado com `faturamentoMunicipioEnabled: true` no `GET /companies`. Recurso
+  mensal com janela: incremental de 3 meses, carga histórica de 3 anos, `desde` sempre
+  no 1º dia do mês. Ver [recurso-faturamento-municipio.md](./recurso-faturamento-municipio.md).
 - Ativação da entrega íntegra é **por-CNPJ, controlada pela API** (toggle
   `Company.stagingSwapEnabled`) + kill switch global `STAGING_SWAP_ENABLED`.
 - Docs do contrato: [spec-entrega-integra-fluxo-caixa.md](./spec-entrega-integra-fluxo-caixa.md),

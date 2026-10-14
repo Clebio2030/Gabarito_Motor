@@ -203,6 +203,19 @@ test('ON: orcamentos é stagingável (leva expectedTotal e snapshotId)', async (
   assert.equal(chamadas[0].desde, '2026-04-01', 'orcamentos leva o desde da janela');
 });
 
+test('ON: faturamentoMunicipio é stagingável (expectedTotal, snapshotId e persisted conferido)', async () => {
+  const { enviarRecurso } = carregarComFlag(true);
+  const { sendFn, chamadas } = criarMock(() => ({ ok: true, persisted: { faturamentoMunicipio: { total: 299 } } }));
+
+  const ok = await enviarRecurso('CNPJ1', baseMeta, 'faturamentoMunicipio', linhas(300), sendFn);
+
+  assert.equal(ok, false, 'API gravou 299 de 300 → recurso truncado, hash não salva');
+  assert.equal(chamadas[0].expectedTotal, 300);
+  assert.ok(chamadas[0].snapshotId);
+  assert.equal(chamadas[0].desde, '2026-04-01', 'faturamentoMunicipio leva o desde da janela');
+  assert.deepEqual(Object.keys(chamadas[0].registros[0]), ['cnpj', 'faturamentoMunicipio'], '1 recurso por POST');
+});
+
 // ── Flag OFF (legado) ───────────────────────────────────────────────────────────
 
 test('OFF: sem expectedTotal/snapshotId; segue mesmo após falha (não fail-fast)', async () => {

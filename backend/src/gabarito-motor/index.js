@@ -19,7 +19,7 @@ const cron = require('node-cron');
 const crypto = require('crypto');
 const { logInfo, logWarn, logError } = require('../logger');
 const { buscarEmpresasAtivas, enviarSync } = require('./sender');
-const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario, extrairProjecaoPagamento, extrairOrcamentos, limitarDesdeOrcamentos } = require('./extractor');
+const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario, extrairProjecaoPagamento, extrairOrcamentos, limitarDesdeOrcamentos, extrairFaturamentoMunicipio, inicioDoMes } = require('./extractor');
 const { checkStateChanged, getLastSyncedAt, updateState, getFullSyncedResources, markResourcesFullSynced, WINDOWED_RESOURCES } = require('./syncState');
 const { runDatabaseMigrations } = require('./migrations');
 
@@ -39,19 +39,23 @@ const SEND_EXPECTED_TOTAL = process.env.GABARITO_EXPECTED_TOTAL !== 'false';
 // payload com 400 multi_resource_payload; ele segue sempre pelo caminho legado.
 const RECURSOS_STAGING = new Set([
   'contasPagar', 'contasReceber', 'curvaAbc', 'entradas', 'vendedores', 'pedidosHorario',
-  'projecaoPagamento', 'orcamentos'
+  'projecaoPagamento', 'orcamentos', 'faturamentoMunicipio'
 ]);
 
+// Recursos com janela que só existem com o toggle da API ligado para o CNPJ
+// (`orcamentosEnabled` / `faturamentoMunicipioEnabled` no GET /companies).
+const RECURSOS_COM_TOGGLE = ['orcamentos', 'faturamentoMunicipio'];
+
 /**
- * Recursos com janela ATIVOS para um CNPJ. `orcamentos` só existe com o toggle
- * `orcamentosEnabled` da API: fora dele, não pode contar como "carga histórica
- * pendente" (forçaria reenvio de tudo todo ciclo) nem ser carimbado como
- * carregado (o CNPJ perderia o backfill de 3 anos quando o toggle ligasse).
- * @param {boolean} orcamentosOn
+ * Recursos com janela ATIVOS para um CNPJ. Recurso de RECURSOS_COM_TOGGLE com o
+ * toggle desligado não pode contar como "carga histórica pendente" (forçaria
+ * reenvio de tudo todo ciclo) nem ser carimbado como carregado (o CNPJ perderia
+ * o backfill quando o toggle ligasse).
+ * @param {Set<string>} ligados  recursos de RECURSOS_COM_TOGGLE ligados no CNPJ
  * @returns {string[]}
  */
-function recursosComJanela(orcamentosOn) {
-  return WINDOWED_RESOURCES.filter(r => r !== 'orcamentos' || orcamentosOn);
+function recursosComJanela(ligados = new Set()) {
+  return WINDOWED_RESOURCES.filter(r => !RECURSOS_COM_TOGGLE.includes(r) || ligados.has(r));
 }
 
 let isMotorRunning = false;
@@ -178,6 +182,7 @@ async function runMotor() {
     const empresasAtivas   = await buscarEmpresasAtivas();
     const cnpjsAtivos      = empresasAtivas.map(e => e.cnpj);
     const orcamentosOnPara = new Set(empresasAtivas.filter(e => e.orcamentosEnabled).map(e => e.cnpj));
+    const municipioOnPara  = new Set(empresasAtivas.filter(e => e.faturamentoMunicipioEnabled).map(e => e.cnpj));
 
     if (!cnpjsAtivos.length) {
       logWarn('[Gabarito] Nenhum CNPJ ativo retornado pela API. Ciclo encerrado.');
@@ -194,13 +199,17 @@ async function runMotor() {
       const desde             = computarDesde(lastSyncedAt);
       const modoSync          = isIncrementalSync ? 'incremental' : 'full';
       const orcamentosOn      = orcamentosOnPara.has(cnpj);
-      const janelaAtiva       = recursosComJanela(orcamentosOn);
+      const municipioOn       = municipioOnPara.has(cnpj);
+      const janelaAtiva       = recursosComJanela(new Set([
+        ...(orcamentosOn ? ['orcamentos'] : []),
+        ...(municipioOn ? ['faturamentoMunicipio'] : [])
+      ]));
 
       logInfo(`[Gabarito] Processando CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) — modo: ${modoSync}, desde: ${desde}`);
 
       // ── FULL SYNC: streaming por ano (memória limitada) ──────────────────────
       if (!isIncrementalSync) {
-        const r = await runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, orcamentosOn);
+        const r = await runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, orcamentosOn, municipioOn);
         if (r.todosSucesso && r.completo) {
           // Hash sentinela: marca lastSyncedAt para os próximos ciclos serem
           // incrementais. O 1º incremental sempre reenviará (hash de 2 meses
@@ -208,9 +217,11 @@ async function runMotor() {
           updateState(cnpj, `full-${hojeFormatado()}`);
           // O full sync carregou os 3 anos de todos os recursos com janela —
           // carimba o watermark para o incremental não os recarregar.
-          // Orçamentos só entram no carimbo se foram de fato enviados (toggle
-          // ligado E extração OK) — senão o backfill fica pendente p/ o incremental.
-          markResourcesFullSynced(cnpj, janelaAtiva.filter(rec => rec !== 'orcamentos' || r.orcamentosEnviado));
+          // Recursos com toggle só entram no carimbo se foram de fato enviados
+          // (toggle ligado E extração OK) — senão o backfill fica pendente p/ o incremental.
+          markResourcesFullSynced(cnpj, janelaAtiva.filter(rec =>
+            (rec !== 'orcamentos' || r.orcamentosEnviado) &&
+            (rec !== 'faturamentoMunicipio' || r.faturamentoMunicipioEnviado)));
           logInfo(`[Gabarito] CNPJ ${cnpj}: full sync concluído — hash salvo.`);
           processados++;
         } else {
@@ -259,12 +270,21 @@ async function runMotor() {
         logInfo(`[Gabarito] [${cnpj}] Extraindo orçamentos (desde ${desdeOrcamentos})...`);
         ({ rows: orcamentosTotal, completo: orcamentosCompleto } = await extrairOrcamentos(idEmpresa, desdeOrcamentos));
       }
-      logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}${orcamentosOn ? `, orcamentos=${orcamentosTotal.length}` : ''}`);
+      // Faturamento por município: mesmo esquema de toggle. Recurso mensal — a
+      // janela começa no 1º dia do mês para não mandar o mês de borda pela metade.
+      let municipioTotal = [];
+      let municipioCompleto = false;
+      const desdeMunicipio = inicioDoMes(desdeDe('faturamentoMunicipio'));
+      if (municipioOn) {
+        logInfo(`[Gabarito] [${cnpj}] Extraindo faturamento por município (desde ${desdeMunicipio})...`);
+        ({ rows: municipioTotal, completo: municipioCompleto } = await extrairFaturamentoMunicipio(idEmpresa, desdeMunicipio));
+      }
+      logInfo(`[Gabarito] [${cnpj}] Extração concluída: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, curvaAbc=${curvaAbcTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}${orcamentosOn ? `, orcamentos=${orcamentosTotal.length}` : ''}${municipioOn ? `, faturamentoMunicipio=${municipioTotal.length}` : ''}`);
 
       const temDados = faturamentoMensal.length > 0 || contasPagarTotal.length > 0
         || contasReceberTotal.length > 0 || curvaAbcTotal.length > 0 || entradasTotal.length > 0
         || vendedoresTotal.length > 0 || pedidosHorarioTotal.length > 0
-        || projecaoPagamentoTotal.length > 0 || orcamentosTotal.length > 0;
+        || projecaoPagamentoTotal.length > 0 || orcamentosTotal.length > 0 || municipioTotal.length > 0;
 
       if (!temDados) {
         logWarn(`[Gabarito] CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) sem dados em ${anoCorrente}.`);
@@ -287,8 +307,9 @@ async function runMotor() {
         );
         // Sem histórico a carregar (janela de 3 anos veio vazia) — marca os
         // pendentes para não reconsultar 3 anos todo ciclo neste CNPJ.
-        // Orçamento com extração FALHA não veio "vazio": continua pendente.
-        const vazios = pendentes.filter(r => r !== 'orcamentos' || orcamentosCompleto);
+        // Recurso com toggle e extração FALHA não veio "vazio": continua pendente.
+        const vazios = pendentes.filter(r =>
+          (r !== 'orcamentos' || orcamentosCompleto) && (r !== 'faturamentoMunicipio' || municipioCompleto));
         if (vazios.length) markResourcesFullSynced(cnpj, vazios);
         processados++;
         continue;
@@ -302,10 +323,12 @@ async function runMotor() {
       // extração voltar, a chave reaparece com as linhas → hash muda → reenvia.
       if (projecaoCompleta) dadosCompletos.projecaoPagamento = projecaoPagamentoTotal;
       if (orcamentosCompleto) dadosCompletos.orcamentos = orcamentosTotal;
-      // Orçamento pendente de carga mas com extração falha não força envio: o
-      // resto seria reenviado de hora em hora por causa dele (mesmo motivo da
-      // projeção). Volta a forçar no ciclo em que a extração passar.
-      const pendentesEnvio = pendentes.filter(r => r !== 'orcamentos' || orcamentosCompleto);
+      if (municipioCompleto) dadosCompletos.faturamentoMunicipio = municipioTotal;
+      // Recurso com toggle pendente de carga mas com extração falha não força
+      // envio: o resto seria reenviado de hora em hora por causa dele (mesmo
+      // motivo da projeção). Volta a forçar no ciclo em que a extração passar.
+      const pendentesEnvio = pendentes.filter(r =>
+        (r !== 'orcamentos' || orcamentosCompleto) && (r !== 'faturamentoMunicipio' || municipioCompleto));
       const { changed, hash } = checkStateChanged(cnpj, dadosCompletos);
 
       // Backfill pendente força o envio mesmo com hash inalterado: a carga
@@ -342,6 +365,14 @@ async function runMotor() {
       ];
       // Extração falha → campo omitido (a API preserva o que tinha).
       if (orcamentosCompleto) recursos.push(['orcamentos', orcamentosTotal]);
+      if (municipioCompleto) recursos.push(['faturamentoMunicipio', municipioTotal]);
+
+      // `desde` que vai no payload = a janela que foi de fato lida (a API apaga
+      // exatamente ela no swap).
+      const desdeEnvio = (campo) =>
+        campo === 'orcamentos' ? desdeOrcamentos
+          : campo === 'faturamentoMunicipio' ? desdeMunicipio
+            : desdeDe(campo);
 
       let todosSucesso = true;
       const backfilledAgora = [];
@@ -349,7 +380,7 @@ async function runMotor() {
         const ehProjecao  = campo === 'projecaoPagamento';
         const metaRecurso = ehProjecao
           ? metaProjecaoPagamento(baseMeta, projecaoDesde)
-          : { ...baseMeta, desde: campo === 'orcamentos' ? desdeOrcamentos : desdeDe(campo) };
+          : { ...baseMeta, desde: desdeEnvio(campo) };
         // Projeção vazia com extração OK vira snapshot vazio (esvazia a viva);
         // com extração falha, nada é enviado e o hash não é salvo mais abaixo.
         const opts = ehProjecao ? { enviarVazio: projecaoCompleta } : {};
@@ -367,6 +398,9 @@ async function runMotor() {
       }
       if (orcamentosOn && !orcamentosCompleto) {
         logWarn(`[Gabarito] [${cnpj}] orcamentos: extração falhou — campo OMITIDO no envio (a API preserva o dado anterior). Os demais recursos seguem normalmente.`);
+      }
+      if (municipioOn && !municipioCompleto) {
+        logWarn(`[Gabarito] [${cnpj}] faturamentoMunicipio: extração falhou — campo OMITIDO no envio (a API preserva o dado anterior). Os demais recursos seguem normalmente.`);
       }
 
       if (todosSucesso && curvaAbcCompleta) {
@@ -410,9 +444,9 @@ async function runMotor() {
  *      anteriores. O primeiro ano remove qualquer dado parcial antigo.
  *      Apenas um ano fica em memória por vez.
  *
- * @returns {Promise<{todosSucesso: boolean, completo: boolean, orcamentosEnviado: boolean}>}
+ * @returns {Promise<{todosSucesso: boolean, completo: boolean, orcamentosEnviado: boolean, faturamentoMunicipioEnviado: boolean}>}
  */
-async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, orcamentosOn = false) {
+async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, orcamentosOn = false, municipioOn = false) {
   const sourceVersion = process.env.GABARITO_VERSION || '1.0.0';
   let todosSucesso = true;
   let completo     = true;
@@ -443,8 +477,19 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, 
       logWarn(`[Gabarito] [${cnpj}] (full) orcamentos: extração falhou — campo OMITIDO no envio.`);
     }
   }
+  // Faturamento por município (toggle da API): mesma regra dos orçamentos. A
+  // janela de 3 anos é alinhada ao 1º dia do mês (recurso mensal).
+  let municipioTotal = [];
+  let municipioCompleto = false;
+  const desdeMunicipio = inicioDoMes(desde);
+  if (municipioOn) {
+    ({ rows: municipioTotal, completo: municipioCompleto } = await extrairFaturamentoMunicipio(idEmpresa, desdeMunicipio));
+    if (!municipioCompleto) {
+      logWarn(`[Gabarito] [${cnpj}] (full) faturamentoMunicipio: extração falhou — campo OMITIDO no envio.`);
+    }
+  }
 
-  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}${orcamentosOn ? `, orcamentos=${orcamentosTotal.length}` : ''}`);
+  logInfo(`[Gabarito] [${cnpj}] (full) base: fat=${faturamentoMensal.length}, pagar=${contasPagarTotal.length}, receber=${contasReceberTotal.length}, entradas=${entradasTotal.length}, vendedores=${vendedoresTotal.length}, pedidosHorario=${pedidosHorarioTotal.length}, projecaoPagamento=${projecaoPagamentoTotal.length}${orcamentosOn ? `, orcamentos=${orcamentosTotal.length}` : ''}${municipioOn ? `, faturamentoMunicipio=${municipioTotal.length}` : ''}`);
 
   // Cada recurso como seu próprio stream (chunkInfo honesto por tabela), igual ao
   // ciclo incremental. Ver enviarRecurso().
@@ -459,20 +504,25 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, 
     ['projecaoPagamento', projecaoPagamentoTotal]
   ];
   if (orcamentosCompleto) recursosBase.push(['orcamentos', orcamentosTotal]);
+  if (municipioCompleto) recursosBase.push(['faturamentoMunicipio', municipioTotal]);
 
   let orcamentosEnviado = false;
+  let faturamentoMunicipioEnviado = false;
   for (const [campo, lista] of recursosBase) {
     const ehProjecao  = campo === 'projecaoPagamento';
-    // Orçamentos levam o `desde` da janela lida (teto de 12 meses): a API apaga
-    // só dt_orc >= desde, mesmo no full.
+    // Orçamentos e faturamento por município levam o `desde` da janela lida
+    // (teto de 12 meses / 1º dia do mês): a API apaga só a partir dele, mesmo no full.
     const metaRecurso = ehProjecao
       ? metaProjecaoPagamento(baseMeta, primeiroDiaDoMes())
-      : (campo === 'orcamentos' ? { ...baseMeta, desde: desdeOrcamentos } : baseMeta);
+      : campo === 'orcamentos' ? { ...baseMeta, desde: desdeOrcamentos }
+        : campo === 'faturamentoMunicipio' ? { ...baseMeta, desde: desdeMunicipio }
+          : baseMeta;
     const opts = ehProjecao ? { enviarVazio: projecaoCompleta } : {};
     const ok = await enviarRecurso(cnpj, metaRecurso, campo, lista, enviarSync, opts);
-    // Falha no envio de orçamentos não reprova o full sync (refaria os 3 anos de
-    // tudo a cada ciclo); sem carimbo, o incremental reenvia a carga dele.
+    // Falha no envio de um recurso com toggle não reprova o full sync (refaria os
+    // 3 anos de tudo a cada ciclo); sem carimbo, o incremental reenvia a carga dele.
     if (campo === 'orcamentos') orcamentosEnviado = ok;
+    else if (campo === 'faturamentoMunicipio') faturamentoMunicipioEnviado = ok;
     else if (!ok) todosSucesso = false;
   }
 
@@ -480,6 +530,7 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, 
   contasPagarTotal = contasReceberTotal = entradasTotal = vendedoresTotal = pedidosHorarioTotal = null;
   projecaoPagamentoTotal = null;
   orcamentosTotal = null;
+  municipioTotal = null;
 
   // 2) Curva ABC em streaming, um ano por vez
   await extrairCurvaAbcStreaming(idEmpresa, desde, async ({ ano, anoDesde, rows, completo: anoCompleto }) => {
@@ -503,7 +554,7 @@ async function runFullSync(cnpj, idEmpresa, desde, dataReferencia, anoCorrente, 
     }
   });
 
-  return { todosSucesso, completo, orcamentosEnviado };
+  return { todosSucesso, completo, orcamentosEnviado, faturamentoMunicipioEnviado };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

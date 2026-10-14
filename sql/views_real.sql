@@ -47,6 +47,73 @@ GROUP BY
     EXTRACT(YEAR FROM se.DTSAIDA),
     EXTRACT(MONTH FROM se.DTSAIDA);
 
+/* Faturamento mensal por municipio e bairro do pedido (mapa de faturamento).
+   Mesmas regras da GABARITO_FATURAMENTO_MENSAL: a soma de todas as linhas de um
+   mes bate com ela (conferido na ARRUDA: 3 anos, 6.175 linhas, total identico).
+   - Nome com 30 caracteres: Firebird 2.5/3 limita identificador a 31.
+   - SAIDAESTOQUE e 1 linha por pedido (PK NRPEDIDO+IDEMPRESA): cada pedido cai
+     num unico bairro, entao QTD_VENDAS/QTD_TROCAS somam entre bairros.
+   - Texto vai CRU em OCTETS (bytes WIN1252), sem TRIM/UPPER/COALESCE nem
+     literal: qualquer funcao de texto sobre coluna NONE da "Malformed string"
+     pelo driver do Motor (mesmo caso do fix da GABARITO_PROJECAO_PAGAMENTO).
+     O Motor decodifica, normaliza e soma as linhas que colidirem:
+     - UF = UF do cadastro do municipio (coerente com o IBGE); a UF digitada
+       no pedido so vale quando o municipio nao tem UF.
+     - BAIRRO e texto livre ("Centro", "CENTRO "): TRIM + caixa alta.
+     - CDMUNICIPIOIBGE fora de 7 digitos vira null. */
+CREATE OR ALTER VIEW GABARITO_FATURAMENTO_MUNICIPIO (
+  IDEMPRESA,
+  ANO,
+  MES,
+  CDMUNICIPIO,
+  MUNICIPIO,
+  CDMUNICIPIOIBGE,
+  UF_MUNICIPIO,
+  UF_PEDIDO,
+  BAIRRO,
+  SUBTOTAL,
+  DESCONTO,
+  TOTAL,
+  SUBTOTAL_TROCA,
+  DESCONTO_TROCA,
+  TOTAL_TROCA,
+  QTD_VENDAS,
+  QTD_TROCAS
+) AS
+SELECT
+    se.IDEMPRESA,
+    EXTRACT(YEAR FROM se.DTSAIDA)                                                       AS ANO,
+    EXTRACT(MONTH FROM se.DTSAIDA)                                                      AS MES,
+    se.CDMUNICIPIO,
+    CAST(m.MUNICIPIO       AS VARCHAR(35) CHARACTER SET OCTETS)                         AS MUNICIPIO,
+    CAST(m.CDMUNICIPIOIBGE AS VARCHAR(7)  CHARACTER SET OCTETS)                         AS CDMUNICIPIOIBGE,
+    CAST(m.UF              AS VARCHAR(2)  CHARACTER SET OCTETS)                         AS UF_MUNICIPIO,
+    CAST(se.UF             AS VARCHAR(2)  CHARACTER SET OCTETS)                         AS UF_PEDIDO,
+    CAST(se.BAIRRO         AS VARCHAR(60) CHARACTER SET OCTETS)                         AS BAIRRO,
+    SUM(CASE WHEN se.STATUS IN (1, 3)   THEN se.SUBTOTAL ELSE 0 END)                    AS SUBTOTAL,
+    SUM(CASE WHEN se.STATUS IN (1, 3)   THEN se.DESCONTO ELSE 0 END)                    AS DESCONTO,
+    SUM(CASE WHEN se.STATUS IN (1, 3)   THEN se.VLTOTAL  ELSE 0 END)                    AS TOTAL,
+    SUM(CASE WHEN se.STATUS IN (40, 43) THEN se.SUBTOTAL ELSE 0 END)                    AS SUBTOTAL_TROCA,
+    SUM(CASE WHEN se.STATUS IN (40, 43) THEN se.DESCONTO ELSE 0 END)                    AS DESCONTO_TROCA,
+    SUM(CASE WHEN se.STATUS IN (40, 43) THEN se.VLTOTAL  ELSE 0 END)                    AS TOTAL_TROCA,
+    COUNT(DISTINCT CASE WHEN se.STATUS IN (1, 3)   THEN se.NRPEDIDO END)                AS QTD_VENDAS,
+    COUNT(DISTINCT CASE WHEN se.STATUS IN (40, 43) THEN se.NRPEDIDO END)                AS QTD_TROCAS
+FROM
+    saidaestoque se
+    LEFT JOIN MUNICIPIO m ON m.CDMUNICIPIO = se.CDMUNICIPIO
+WHERE
+    se.STATUS IN (1, 3, 40, 43)
+GROUP BY
+    se.IDEMPRESA,
+    EXTRACT(YEAR FROM se.DTSAIDA),
+    EXTRACT(MONTH FROM se.DTSAIDA),
+    se.CDMUNICIPIO,
+    CAST(m.MUNICIPIO       AS VARCHAR(35) CHARACTER SET OCTETS),
+    CAST(m.CDMUNICIPIOIBGE AS VARCHAR(7)  CHARACTER SET OCTETS),
+    CAST(m.UF              AS VARCHAR(2)  CHARACTER SET OCTETS),
+    CAST(se.UF             AS VARCHAR(2)  CHARACTER SET OCTETS),
+    CAST(se.BAIRRO         AS VARCHAR(60) CHARACTER SET OCTETS);
+
 CREATE OR ALTER VIEW GABARITO_CTAPAGAR_GERAL (
     IDEMPRESA,
     NRPEDIDOVALE,

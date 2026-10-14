@@ -50,7 +50,10 @@ function resolverEspera(err) {
  * controlado do servidor: API antiga não manda o campo → desligado, e o Motor
  * nem extrai. Só `true` literal liga.
  *
- * @returns {Promise<Array<{ cnpj: string, orcamentosEnabled: boolean }>>}
+ * `faturamentoMunicipioEnabled` faz o mesmo para o recurso `faturamentoMunicipio`
+ * (mapa de faturamento por município/bairro).
+ *
+ * @returns {Promise<Array<{ cnpj: string, orcamentosEnabled: boolean, faturamentoMunicipioEnabled: boolean }>>}
  */
 async function buscarEmpresasAtivas() {
   const url = process.env.GABARITO_COMPANIES_URL ||
@@ -66,7 +69,11 @@ async function buscarEmpresasAtivas() {
       const lista  = Array.isArray(response.data) ? response.data : [];
       const ativos = lista
         .filter((c) => c.status === 'ACTIVE')
-        .map((c) => ({ cnpj: c.cnpj, orcamentosEnabled: c.orcamentosEnabled === true }));
+        .map((c) => ({
+          cnpj: c.cnpj,
+          orcamentosEnabled: c.orcamentosEnabled === true,
+          faturamentoMunicipioEnabled: c.faturamentoMunicipioEnabled === true
+        }));
 
       logInfo(`[Gabarito] ${ativos.length} CNPJ(s) ativo(s) recebidos da API.`);
       return ativos;

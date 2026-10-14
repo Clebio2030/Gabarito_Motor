@@ -162,9 +162,9 @@ test('o payload tem exatamente os campos do contrato', () => {
 });
 
 test('toggle desligado: orcamentos fora dos recursos com janela (não cobra nem carimba backfill)', () => {
-  assert.ok(!recursosComJanela(false).includes('orcamentos'));
-  assert.ok(recursosComJanela(true).includes('orcamentos'));
-  assert.deepEqual(recursosComJanela(false), ['curvaAbc', 'entradas', 'vendedores', 'pedidosHorario']);
+  assert.ok(!recursosComJanela(new Set()).includes('orcamentos'));
+  assert.ok(recursosComJanela(new Set(['orcamentos'])).includes('orcamentos'));
+  assert.deepEqual(recursosComJanela(new Set()), ['curvaAbc', 'entradas', 'vendedores', 'pedidosHorario']);
 });
 
 test('histórico de orçamentos tem teto de 12 meses (1º dia do mês)', () => {
