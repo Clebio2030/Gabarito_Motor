@@ -122,6 +122,24 @@ Uma máquina de cliente é modesta e o volume varia muito (receber já passou de
   — a entrega íntegra (staging+swap) e, no futuro, a normalização do fan-out de receber
   (~78×) endereçam isso. Ver Fase 2 da spec.
 
+## 11. Regra de Ouro da Granularidade e Unicidade de `srcKey`
+
+**Por quê:** se a chave natural `srcKey` do recurso tiver granularidade menor que a View/tabela
+do Firebird, múltiplas linhas colidirão. No Motor ou na API (`ON CONFLICT (cnpj, src_key)`),
+uma linha sobrescreverá ou fundirá as outras — descartando silenciosamente registros
+(como clientes distintos atendidos no mesmo bairro).
+
+**Regras práticas:**
+1. **Granularidade idêntica ao `GROUP BY` / PK:**
+   A `srcKey` deve conter exatamente todas as colunas que definem a unicidade da View (as colunas
+   da cláusula `GROUP BY` ou PK). Se o `GROUP BY` tem 8 colunas (ex.: empresa, ano, mês, UF,
+   município, bairro, vendedor, cliente), a `srcKey` precisa concatenar todas elas. Se um novo
+   campo for adicionado ao agrupamento, a `srcKey` deve ser expandida imediatamente.
+2. **Sanity check no Motor (alerta de colisão antes do envio):**
+   Antes de despachar o payload ou ao agregar dados, o Motor confere se a quantidade de linhas
+   equivale à quantidade de chaves únicas (`linhas.length === chavesUnicas.size`). Qualquer
+   redução imprevista emite `logWarn`, tornando a perda de dados imediatamente visível no log local.
+
 ---
 
 ## Checklist rápido pra qualquer mudança no Motor
@@ -131,6 +149,7 @@ Uma máquina de cliente é modesta e o volume varia muito (receber já passou de
 - [ ] O procedimento de rollout/rollback é **sem entrar em máquina de cliente**?
 - [ ] Falha é **fail-safe** (não perde dado, não deixa estado parcial visível)?
 - [ ] É **idempotente** (reexecutar/reenviar não duplica nem corrompe)?
+- [ ] A **`srcKey`** cobre todas as colunas do `GROUP BY` / PK da View sem colisões?
 - [ ] É **retrocompatível** com a API/Motor da versão anterior durante o rollout?
 - [ ] Dá pra **validar num canário** (1 CNPJ) antes da frota?
 - [ ] O resultado é **observável de fora** (log/echo/endpoint), sem RDP?

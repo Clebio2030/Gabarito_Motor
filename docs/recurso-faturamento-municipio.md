@@ -63,7 +63,7 @@ inclusive no full). A API deve substituir, para aquele CNPJ, as linhas com
 
 | Campo | Tipo | Notas |
 |---|---|---|
-| `srcKey` | string | `IDEMPRESA-ANO-MES-UF-CDMUNICIPIO-BAIRRO` (`CDMUNICIPIO` 0 se nulo). Único por CNPJ. |
+| `srcKey` | string | `IDEMPRESA-ANO-MES-UF-CDMUNICIPIO-BAIRRO-CDVENDEDOR-CDCLIENTE` (`CDMUNICIPIO`, `CDVENDEDOR`, `CDCLIENTE` 0 se nulo). Único por CNPJ. |
 | `idEmpresa`, `ano`, `mes` | int | |
 | `uf` | string | 2 letras ou `SEM UF` |
 | `cdMunicipio` | int \| null | código interno do ERP |

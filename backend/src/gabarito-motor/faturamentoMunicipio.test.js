@@ -66,11 +66,12 @@ test('cdVendedor/nomeVendedor/cdCliente/cliente viram null quando a view não te
   assert.equal(r.nomeVendedor, null);
   assert.equal(r.cdCliente, null);
   assert.equal(r.cliente, null);
+  assert.equal(r.srcKey, '1-2026-9-PI-751-TIBERAO-0-0');
 });
 
 test('mapeia a linha da view (WIN1252 decodificado, números, chave natural)', () => {
   const r = mapFaturamentoMunicipioRow(linha({ bairro: win1252('SÃO JOSÉ') }));
-  assert.equal(r.srcKey, '1-2026-9-PI-751-SÃO JOSÉ');
+  assert.equal(r.srcKey, '1-2026-9-PI-751-SÃO JOSÉ-42-1001');
   assert.equal(r.municipio, 'FLORIANO');
   assert.equal(r.cdMunicipioIbge, '2203909');
   assert.equal(r.bairro, 'SÃO JOSÉ');
@@ -92,7 +93,7 @@ test('pedido sem município: cdMunicipio/municipio null, UF do pedido separa a c
   assert.equal(r.cdMunicipio, null);
   assert.equal(r.municipio, null);
   assert.equal(r.uf, 'MA');
-  assert.equal(r.srcKey, '1-2026-9-MA-0-TIBERAO');
+  assert.equal(r.srcKey, '1-2026-9-MA-0-TIBERAO-42-1001');
 });
 
 test('UF: cadastro do município vence a digitada no pedido; sem nenhuma → SEM UF', () => {
@@ -125,6 +126,20 @@ test('linhas que colidem após normalizar o bairro são somadas (chave única p/
   assert.equal(sj.totalTroca, -5);
   assert.equal(sj.qtdTrocas, 1);
   assert.equal(new Set(out.map(r => r.srcKey)).size, out.length, 'srcKey sem duplicata');
+});
+
+test('clientes diferentes no mesmo bairro têm srcKeys distintas e não são fundidos', () => {
+  const rows = [
+    linha({ cdcliente: 1001, cliente: win1252('MARIA LTDA'), bairro: win1252('CENTRO'), total: 100 }),
+    linha({ cdcliente: 659, cliente: win1252('ARNALDO TAVARES'), bairro: win1252('CENTRO'), total: 200 })
+  ].map(mapFaturamentoMunicipioRow);
+
+  const out = agregarFaturamentoMunicipio(rows);
+
+  assert.equal(out.length, 2);
+  assert.equal(out.find(r => r.cdCliente === 659)?.cliente, 'ARNALDO TAVARES');
+  assert.equal(out.find(r => r.cdCliente === 1001)?.cliente, 'MARIA LTDA');
+  assert.equal(new Set(out.map(r => r.srcKey)).size, 2);
 });
 
 test('mesmo município com UF do pedido diferente vira uma linha só', () => {

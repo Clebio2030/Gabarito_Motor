@@ -955,11 +955,13 @@ function mapFaturamentoMunicipioRow(row) {
   const cdMunicipio = readNumberOrNull(row, 'CDMUNICIPIO');
   const ibge        = readText(row, 'CDMUNICIPIOIBGE');
   const bairro      = normalizarTexto(readText(row, 'BAIRRO')) || 'SEM BAIRRO';
+  const cdVendedor  = readNumberOrNull(row, 'CDVENDEDOR');
+  const cdCliente   = readNumberOrNull(row, 'CDCLIENTE');
 
   return {
-    // Chave natural, única por CNPJ. UF entra porque, sem município, é ela que
-    // separa as linhas.
-    srcKey:          `${idEmpresa}-${ano}-${mes}-${uf}-${cdMunicipio ?? 0}-${bairro}`,
+    // Chave natural, única por CNPJ. Inclui vendedor e cliente para não fundir
+    // nem sobrescrever clientes distintos atendidos no mesmo bairro/mês.
+    srcKey:          `${idEmpresa}-${ano}-${mes}-${uf}-${cdMunicipio ?? 0}-${bairro}-${cdVendedor ?? 0}-${cdCliente ?? 0}`,
     idEmpresa,
     ano,
     mes,
@@ -970,9 +972,9 @@ function mapFaturamentoMunicipioRow(row) {
     bairro,
     // Vendedor e cliente: permitem desdobrar o mapa sem join extra na API.
     // Null quando a view não disponibiliza (filial sem a view atualizada).
-    cdVendedor:      readNumberOrNull(row, 'CDVENDEDOR'),
+    cdVendedor,
     nomeVendedor:    readTextOrNull(row, 'NOME_VENDEDOR'),
-    cdCliente:       readNumberOrNull(row, 'CDCLIENTE'),
+    cdCliente,
     cliente:         readTextOrNull(row, 'CLIENTE'),
     subtotal:        num('SUBTOTAL'),
     desconto:        num('DESCONTO'),
@@ -1030,7 +1032,12 @@ async function extrairFaturamentoMunicipio(idEmpresa, desde) {
     logError(`[Gabarito] Erro ao consultar GABARITO_FATURAMENTO_MUNICIPIO (IDEMPRESA=${idEmpresa}):`, err);
     return { rows: [], completo: false };
   }
-  return { rows: agregarFaturamentoMunicipio((rows || []).map(mapFaturamentoMunicipioRow)), completo: true };
+  const rawRows = rows || [];
+  const agregadas = agregarFaturamentoMunicipio(rawRows.map(mapFaturamentoMunicipioRow));
+  if (rawRows.length !== agregadas.length) {
+    logWarn(`[Gabarito] [${idEmpresa}] faturamentoMunicipio: ${rawRows.length} linhas do Firebird foram reduzidas para ${agregadas.length} por agrupamento de srcKey. Verifique se a granularidade da chave cobre toda a View.`);
+  }
+  return { rows: agregadas, completo: true };
 }
 
 // ── Streaming Curva ABC (Full Sync) ───────────────────────────────────────────

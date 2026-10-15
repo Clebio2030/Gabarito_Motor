@@ -105,6 +105,14 @@ async function enviarRecurso(cnpj, baseMeta, nomeCampo, registros, sendFn = envi
   const enviarVazio = opts.enviarVazio === true;
   if (lista.length === 0 && !enviarVazio) return true;
 
+  // Sanity check: alerta de colisão de srcKey no lote antes do envio
+  if (lista.length > 0 && lista[0].srcKey != null) {
+    const chavesUnicas = new Set(lista.map(r => r.srcKey));
+    if (chavesUnicas.size !== lista.length) {
+      logWarn(`[Gabarito] [${cnpj}] Atenção: ${lista.length} linhas de ${nomeCampo} contêm apenas ${chavesUnicas.size} chaves srcKey únicas (colisão de chave no lote!). Verifique a composição da chave.`);
+    }
+  }
+
   const usaStaging = SEND_EXPECTED_TOTAL && RECURSOS_STAGING.has(nomeCampo);
   const expectedTotal = lista.length;            // congelado para toda a entrega
   const total = Math.max(1, Math.ceil(expectedTotal / CHUNK_SIZE));
