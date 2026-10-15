@@ -968,6 +968,12 @@ function mapFaturamentoMunicipioRow(row) {
     municipio:       readTextOrNull(row, 'MUNICIPIO'),
     cdMunicipioIbge: IBGE_MUNICIPIO.test(ibge) ? ibge : null,
     bairro,
+    // Vendedor e cliente: permitem desdobrar o mapa sem join extra na API.
+    // Null quando a view não disponibiliza (filial sem a view atualizada).
+    cdVendedor:      readNumberOrNull(row, 'CDVENDEDOR'),
+    nomeVendedor:    readTextOrNull(row, 'NOME_VENDEDOR'),
+    cdCliente:       readNumberOrNull(row, 'CDCLIENTE'),
+    cliente:         readTextOrNull(row, 'CLIENTE'),
     subtotal:        num('SUBTOTAL'),
     desconto:        num('DESCONTO'),
     total:           num('TOTAL'),

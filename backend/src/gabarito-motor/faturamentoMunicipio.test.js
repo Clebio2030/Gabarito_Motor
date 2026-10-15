@@ -27,6 +27,10 @@ function linha(over = {}) {
     uf_municipio: win1252('PI'),
     uf_pedido: win1252('PI'),
     bairro: win1252('TIBERAO'),
+    cdvendedor: 42,
+    nome_vendedor: win1252('JOÃO SILVA'),
+    cdcliente: 1001,
+    cliente: win1252('MARIA LTDA'),
     subtotal: 82000.5,
     desconto: 100,
     total: 81900.5,
@@ -42,8 +46,26 @@ function linha(over = {}) {
 test('o payload tem exatamente os campos do contrato', () => {
   assert.deepEqual(Object.keys(mapFaturamentoMunicipioRow(linha())), [
     'srcKey', 'idEmpresa', 'ano', 'mes', 'uf', 'cdMunicipio', 'municipio', 'cdMunicipioIbge', 'bairro',
+    'cdVendedor', 'nomeVendedor', 'cdCliente', 'cliente',
     'subtotal', 'desconto', 'total', 'subtotalTroca', 'descontoTroca', 'totalTroca', 'qtdVendas', 'qtdTrocas'
   ]);
+});
+
+test('cdVendedor/nomeVendedor/cdCliente/cliente são mapeados corretamente', () => {
+  const r = mapFaturamentoMunicipioRow(linha());
+  assert.equal(r.cdVendedor, 42);
+  assert.equal(r.nomeVendedor, 'JOÃO SILVA');
+  assert.equal(r.cdCliente, 1001);
+  assert.equal(r.cliente, 'MARIA LTDA');
+});
+
+test('cdVendedor/nomeVendedor/cdCliente/cliente viram null quando a view não tem os campos (filial desatualizada)', () => {
+  const semCampos = linha({ cdvendedor: null, nome_vendedor: null, cdcliente: null, cliente: null });
+  const r = mapFaturamentoMunicipioRow(semCampos);
+  assert.equal(r.cdVendedor, null);
+  assert.equal(r.nomeVendedor, null);
+  assert.equal(r.cdCliente, null);
+  assert.equal(r.cliente, null);
 });
 
 test('mapeia a linha da view (WIN1252 decodificado, números, chave natural)', () => {
