@@ -35,7 +35,7 @@ Tudo em `backend/src/`:
 | `gabarito-motor/extractor.js` | Extração das views Firebird (`GABARITO_*`) + decode WIN1252 dos textos. |
 | `gabarito-motor/sender.js` | HTTP client: `GET /companies`, `POST /sync` com retry (5×, respeita `retry_after`). |
 | `gabarito-motor/firebird.js` | Pool de conexões Firebird (`FB_POOL_SIZE`), timeout por query. |
-| `gabarito-motor/syncState.js` | Estado por CNPJ em `sync_state.json`: hash (dedup) + watermark de carga histórica (`fullSyncedResources`). |
+| `gabarito-motor/syncState.js` | Estado por CNPJ em `sync_state.json`: hash (dedup) + watermark de carga histórica (`fullSyncedResources`) + hash por snapshot independente (`snapshotHashes`, auditoria de produtos). |
 | `gabarito-motor/migrations.js` | `runDatabaseMigrations()` — aplica/atualiza as views (`CREATE OR ALTER VIEW`). |
 | `gabarito-motor/*.test.js` | Testes (`node --test`). |
 | `server.js` | Express: `/health`, autentica `/companies` interno, e `require('./gabarito-motor')` sobe o Motor. |
@@ -122,7 +122,8 @@ Tudo em `backend/src/`:
 ## Contrato com a API
 
 - **Recursos stagingáveis** (entrega íntegra): `contasPagar, contasReceber, curvaAbc,
-  entradas, vendedores, pedidosHorario, projecaoPagamento, orcamentos, faturamentoMunicipio`.
+  entradas, vendedores, pedidosHorario, projecaoPagamento, orcamentos, faturamentoMunicipio`
+  e os 4 `auditoria*` (código de barras, NCM, custo × preço, sem imposto de venda).
   `faturamentoMensal` **não**
   (segue legado).
 - **`projecaoPagamento`** é o único com **janela futura** (mês corrente + 2 meses por
@@ -137,6 +138,12 @@ Tudo em `backend/src/`:
   extraído/enviado com `faturamentoMunicipioEnabled: true` no `GET /companies`. Recurso
   mensal com janela: incremental de 3 meses, carga histórica de 3 anos, `desde` sempre
   no 1º dia do mês. Ver [recurso-faturamento-municipio.md](./recurso-faturamento-municipio.md).
+- **`auditoriaCodigoBarras`, `auditoriaNcm`, `auditoriaCustoPreco`, `auditoriaSemImpostoVenda`**
+  (auditoria do cadastro de produtos) só são extraídos/enviados com
+  `auditoriaProdutosEnabled: true` no `GET /companies`. Snapshots completos sem janela
+  (sem `desde`), com hash próprio por recurso (`snapshotHashes` em `sync_state.json`),
+  rodando depois do ciclo principal e isolados dele. Snapshot vazio é enviado quando a
+  extração deu certo e não há problema. Ver [recurso-auditoria-produtos.md](./recurso-auditoria-produtos.md).
 - **Reenvio completo sob demanda:** `resyncToken` (string opaca) no `GET /companies`.
   Token diferente do último cumprido (`resyncApplied` em `sync_state.json`) → o
   ciclo ignora o hash e reenvia todos os recursos na janela normal (3 meses). Só é

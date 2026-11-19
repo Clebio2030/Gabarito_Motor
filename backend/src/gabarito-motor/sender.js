@@ -53,12 +53,15 @@ function resolverEspera(err) {
  * `faturamentoMunicipioEnabled` faz o mesmo para o recurso `faturamentoMunicipio`
  * (mapa de faturamento por município/bairro).
  *
+ * `auditoriaProdutosEnabled` liga os 4 recursos da auditoria de cadastro de produtos
+ * (auditoriaCodigoBarras, auditoriaNcm, auditoriaCustoPreco, auditoriaSemImpostoVenda).
+ *
  * `resyncToken` (string opaca, opcional) pede UM reenvio completo do CNPJ
  * ignorando o hash: o Motor reenvia quando o token difere do último cumprido
  * (sync_state.json). A API escalona a frota trocando o token por grupo de CNPJs.
  * API antiga / campo ausente → null, nada muda.
  *
- * @returns {Promise<Array<{ cnpj: string, orcamentosEnabled: boolean, faturamentoMunicipioEnabled: boolean, resyncToken: string|null }>>}
+ * @returns {Promise<Array<{ cnpj: string, orcamentosEnabled: boolean, faturamentoMunicipioEnabled: boolean, auditoriaProdutosEnabled: boolean, resyncToken: string|null }>>}
  */
 async function buscarEmpresasAtivas() {
   const url = process.env.GABARITO_COMPANIES_URL ||
@@ -78,6 +81,7 @@ async function buscarEmpresasAtivas() {
           cnpj: c.cnpj,
           orcamentosEnabled: c.orcamentosEnabled === true,
           faturamentoMunicipioEnabled: c.faturamentoMunicipioEnabled === true,
+          auditoriaProdutosEnabled: c.auditoriaProdutosEnabled === true,
           resyncToken: (typeof c.resyncToken === 'string' && c.resyncToken.trim()) ? c.resyncToken.trim() : null
         }));
 

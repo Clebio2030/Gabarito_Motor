@@ -7,7 +7,8 @@ const { logError } = require('../logger');
 const STATE_FILE_PATH = process.env.GABARITO_STATE_FILE || path.join(__dirname, '..', '..', 'sync_state.json');
 
 // Formato do estado por CNPJ:
-// { hash: string, lastSyncedAt: string|null, fullSyncedResources?: string[], resyncApplied?: string }
+// { hash: string, lastSyncedAt: string|null, fullSyncedResources?: string[], resyncApplied?: string,
+//   snapshotHashes?: { [recurso]: string } }
 //
 // `resyncApplied` é o último `resyncToken` (toggle da API em GET /companies) que
 // o CNPJ já cumpriu — ver getResyncApplied().
@@ -112,8 +113,40 @@ function updateState(cnpj, newHash) {
     hash: newHash,
     lastSyncedAt: new Date().toISOString(),
     fullSyncedResources: anterior.fullSyncedResources,
-    resyncApplied: anterior.resyncApplied
+    resyncApplied: anterior.resyncApplied,
+    snapshotHashes: anterior.snapshotHashes
   };
+  saveState(state);
+}
+
+/**
+ * Hash por recurso para snapshots independentes do ciclo principal (auditoria de
+ * produtos): o catálogo muda num ritmo próprio e não pode reenviar contas a
+ * pagar/receber nem curva, nem ser reenviado por mudança deles.
+ * @param {string} cnpj
+ * @param {string} recurso
+ * @param {any}    data
+ * @returns {{ changed: boolean, hash: string }}
+ */
+function checkSnapshotChanged(cnpj, recurso, data) {
+  const state = loadState();
+  const currentHash  = generateHash(data);
+  const previousHash = state[cnpj]?.snapshotHashes?.[recurso] ?? null;
+  return { changed: currentHash !== previousHash, hash: currentHash };
+}
+
+/**
+ * Carimba o hash do recurso depois da entrega confirmada (mesmo gate do hash
+ * principal: falha no envio não carimba, o próximo ciclo reenvia).
+ * @param {string} cnpj
+ * @param {string} recurso
+ * @param {string} hash
+ */
+function updateSnapshotHash(cnpj, recurso, hash) {
+  const state = loadState();
+  const entry = state[cnpj] || { hash: null, lastSyncedAt: null };
+  entry.snapshotHashes = { ...(entry.snapshotHashes || {}), [recurso]: hash };
+  state[cnpj] = entry;
   saveState(state);
 }
 
@@ -184,5 +217,7 @@ module.exports = {
   markResourcesFullSynced,
   getResyncApplied,
   markResyncApplied,
+  checkSnapshotChanged,
+  updateSnapshotHash,
   WINDOWED_RESOURCES
 };

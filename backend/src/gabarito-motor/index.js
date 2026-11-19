@@ -19,8 +19,8 @@ const cron = require('node-cron');
 const crypto = require('crypto');
 const { logInfo, logWarn, logError } = require('../logger');
 const { buscarEmpresasAtivas, enviarSync } = require('./sender');
-const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario, extrairProjecaoPagamento, extrairOrcamentos, limitarDesdeOrcamentos, extrairFaturamentoMunicipio, inicioDoMes } = require('./extractor');
-const { checkStateChanged, getLastSyncedAt, updateState, getFullSyncedResources, markResourcesFullSynced, getResyncApplied, markResyncApplied, WINDOWED_RESOURCES } = require('./syncState');
+const { mapearCnpjsParaIdEmpresa, extrairFaturamentoMensal, extrairContasPagar, extrairContasReceber, extrairCurvaAbc, extrairCurvaAbcStreaming, extrairEntradas, extrairVendedores, extrairPedidosPorHorario, extrairProjecaoPagamento, extrairOrcamentos, limitarDesdeOrcamentos, extrairFaturamentoMunicipio, inicioDoMes, extrairAuditoriaCodigoBarras, extrairAuditoriaNcm, extrairAuditoriaCustoPreco, extrairAuditoriaSemImpostoVenda } = require('./extractor');
+const { checkStateChanged, getLastSyncedAt, updateState, getFullSyncedResources, markResourcesFullSynced, getResyncApplied, markResyncApplied, checkSnapshotChanged, updateSnapshotHash, WINDOWED_RESOURCES } = require('./syncState');
 const { runDatabaseMigrations } = require('./migrations');
 
 const CHUNK_SIZE = 5000;
@@ -39,8 +39,20 @@ const SEND_EXPECTED_TOTAL = process.env.GABARITO_EXPECTED_TOTAL !== 'false';
 // payload com 400 multi_resource_payload; ele segue sempre pelo caminho legado.
 const RECURSOS_STAGING = new Set([
   'contasPagar', 'contasReceber', 'curvaAbc', 'entradas', 'vendedores', 'pedidosHorario',
-  'projecaoPagamento', 'orcamentos', 'faturamentoMunicipio'
+  'projecaoPagamento', 'orcamentos', 'faturamentoMunicipio',
+  'auditoriaCodigoBarras', 'auditoriaNcm', 'auditoriaCustoPreco', 'auditoriaSemImpostoVenda'
 ]);
+
+// Auditoria de cadastro de produtos: snapshots sem janela, ligados por CNPJ pelo
+// toggle `auditoriaProdutosEnabled` (GET /companies). Cada recurso é extraído,
+// deduplicado (hash próprio) e enviado isolado do ciclo principal — ver
+// sincronizarAuditoriaProdutos().
+const EXTRATORES_AUDITORIA = [
+  ['auditoriaCodigoBarras',     extrairAuditoriaCodigoBarras],
+  ['auditoriaNcm',              extrairAuditoriaNcm],
+  ['auditoriaCustoPreco',       extrairAuditoriaCustoPreco],
+  ['auditoriaSemImpostoVenda',  extrairAuditoriaSemImpostoVenda]
+];
 
 // Recursos com janela que só existem com o toggle da API ligado para o CNPJ
 // (`orcamentosEnabled` / `faturamentoMunicipioEnabled` no GET /companies).
@@ -168,6 +180,59 @@ async function enviarRecurso(cnpj, baseMeta, nomeCampo, registros, sendFn = envi
   return ok;
 }
 
+/**
+ * Auditoria de cadastro de produtos de UM CNPJ: 4 snapshots independentes.
+ *
+ * Cada recurso: extrai → compara o hash próprio (sync_state.json, snapshotHashes) →
+ * envia o snapshot completo → só então carimba o hash. Snapshot vazio (extração OK e
+ * nenhum problema) É enviado (`expectedTotal: 0`): é assim que a API esvazia o que o
+ * cliente já corrigiu no ERP. Extração FALHA omite o campo (a API preserva o que
+ * tinha) e não carimba nada.
+ *
+ * O catálogo não tem IDEMPRESA: o mesmo catálogo vai para todo CNPJ ligado do banco.
+ *
+ * @param {string}  cnpj
+ * @param {string}  dataReferencia
+ * @param {object}  opts  { forcar: ignora o hash (resyncToken), sendFn, extratores } — os dois últimos p/ teste
+ * @returns {Promise<{enviados: string[], inalterados: string[], falhas: string[]}>}
+ */
+async function sincronizarAuditoriaProdutos(cnpj, dataReferencia, opts = {}) {
+  const { forcar = false, sendFn = enviarSync, extratores = EXTRATORES_AUDITORIA } = opts;
+  const baseMeta = {
+    dataReferencia,
+    sourceVersion: process.env.GABARITO_VERSION || '1.0.0',
+    syncMode: 'full'
+  };
+  const resultado = { enviados: [], inalterados: [], falhas: [] };
+
+  for (const [campo, extrair] of extratores) {
+    logInfo(`[Gabarito] [${cnpj}] Extraindo ${campo}...`);
+    const { rows, completo } = await extrair();
+    if (!completo) {
+      logWarn(`[Gabarito] [${cnpj}] ${campo}: extração falhou — campo OMITIDO no envio (a API preserva o dado anterior). Os demais recursos seguem normalmente.`);
+      resultado.falhas.push(campo);
+      continue;
+    }
+
+    const { changed, hash } = checkSnapshotChanged(cnpj, campo, rows);
+    if (!changed && !forcar) {
+      logInfo(`[Gabarito] [${cnpj}] ${campo}: inalterado (${rows.length} linhas). Pulando envio (hash: ${hash}).`);
+      resultado.inalterados.push(campo);
+      continue;
+    }
+
+    logInfo(`[Gabarito] [${cnpj}] ${campo}: ${rows.length} linha(s) com problema para enviar.`);
+    const ok = await enviarRecurso(cnpj, baseMeta, campo, rows, sendFn, { enviarVazio: true });
+    if (ok) {
+      updateSnapshotHash(cnpj, campo, hash);
+      resultado.enviados.push(campo);
+    } else {
+      resultado.falhas.push(campo);
+    }
+  }
+  return resultado;
+}
+
 async function runMotor() {
   if (isMotorRunning) {
     logWarn('[Gabarito] Ciclo anterior ainda em andamento. Ignorando este disparo.');
@@ -191,7 +256,11 @@ async function runMotor() {
     const cnpjsAtivos      = empresasAtivas.map(e => e.cnpj);
     const orcamentosOnPara = new Set(empresasAtivas.filter(e => e.orcamentosEnabled).map(e => e.cnpj));
     const municipioOnPara  = new Set(empresasAtivas.filter(e => e.faturamentoMunicipioEnabled).map(e => e.cnpj));
+    const auditoriaOnPara  = new Set(empresasAtivas.filter(e => e.auditoriaProdutosEnabled).map(e => e.cnpj));
     const resyncTokenPara  = new Map(empresasAtivas.filter(e => e.resyncToken).map(e => [e.cnpj, e.resyncToken]));
+    // CNPJs com reenvio pedido pela API NESTE ciclo. O loop principal carimba o token
+    // como cumprido antes da auditoria rodar, então a decisão é capturada antes.
+    const resyncForcado    = new Set();
 
     if (!cnpjsAtivos.length) {
       logWarn('[Gabarito] Nenhum CNPJ ativo retornado pela API. Ciclo encerrado.');
@@ -215,6 +284,7 @@ async function runMotor() {
       ]));
       const resyncToken       = resyncTokenPara.get(cnpj) ?? null;
       const resyncPendente    = precisaResync(resyncToken, getResyncApplied(cnpj));
+      if (resyncPendente) resyncForcado.add(cnpj);
 
       logInfo(`[Gabarito] Processando CNPJ ${cnpj} (IDEMPRESA=${idEmpresa}) — modo: ${modoSync}, desde: ${desde}`);
 
@@ -438,6 +508,17 @@ async function runMotor() {
       }
 
       processados++;
+    }
+
+    // Auditoria de cadastro de produtos: depois do ciclo principal e isolada dele —
+    // falha aqui nunca reprova nem reenvia os demais recursos.
+    for (const cnpj of Object.keys(mapaCnpjId)) {
+      if (!auditoriaOnPara.has(cnpj)) continue;
+      try {
+        await sincronizarAuditoriaProdutos(cnpj, dataReferencia, { forcar: resyncForcado.has(cnpj) });
+      } catch (err) {
+        logError(`[Gabarito] [${cnpj}] Erro inesperado na auditoria de produtos:`, err);
+      }
     }
 
   } catch (err) {
@@ -667,4 +748,4 @@ if (process.env.GABARITO_DISABLE_BOOTSTRAP !== 'true') {
   });
 }
 
-module.exports = { enviarRecurso, recursosComJanela, precisaResync };
+module.exports = { enviarRecurso, recursosComJanela, precisaResync, sincronizarAuditoriaProdutos };

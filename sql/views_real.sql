@@ -673,3 +673,136 @@ SELECT
 FROM SAIDAESTOQUE s
 WHERE s.NRORCAMENTO > 0
   AND s.STATUS IN (0, 1, 2, 3);
+
+/* =============================================================
+   AUDITORIA DE CADASTRO DE PRODUTOS (snapshot, sem janela)
+   Quatro recursos: auditoriaCodigoBarras, auditoriaNcm, auditoriaCustoPreco,
+   auditoriaSemImpostoVenda. Ligados por CNPJ pelo toggle auditoriaProdutosEnabled.
+   Nomes GABARITO_AUD_* de proposito: nao colidem com as views de analise manual
+   (GABARITO_CODIGO_BARRAS, GABARITO_NCM etc.) que podem existir no ERP.
+   - Texto vai CRU em OCTETS, sem TRIM/UPPER/COALESCE nem literal: o Motor decodifica
+     WIN1252 e classifica a situacao (funcao de texto sobre coluna NONE da
+     "Malformed string" no driver).
+   - Codigo de barras e NCM: a view so entrega a base. A classificacao (espaco,
+     caractere invalido, tamanho, repetido) e feita no Motor. REPETIDO exige cruzar
+     todos os codigos entre si e PRODUTO_CODBARRA so tem indice por CDPRODUTO: o JOIN
+     por codigo dentro do SQL e quadratico no Firebird 2.5.
+   - Custo x preco e imposto de venda: so campos numericos, o filtro e a situacao
+     (SMALLINT) saem aqui. */
+
+/* Codigo de barras: 1 linha por PRODUTO_CODBARRA (CDPRODUTO + CODBARRA + CDUNIDADE).
+   PADRAO = -1 marca o codigo principal do produto. Ignora produtos 'FRETE%'. */
+CREATE OR ALTER VIEW GABARITO_AUD_CODIGO_BARRAS (
+    CDPRODUTO,
+    PRODUTO,
+    INATIVO,
+    CDUNIDADE,
+    CODBARRA,
+    PADRAO
+) AS
+SELECT
+    CAST(P.CDPRODUTO AS VARCHAR(20) CHARACTER SET OCTETS),
+    CAST(P.PRODUTO   AS VARCHAR(70) CHARACTER SET OCTETS),
+    P.INATIVO,
+    CAST(C.CDUNIDADE AS VARCHAR(3)  CHARACTER SET OCTETS),
+    CAST(C.CODBARRA  AS VARCHAR(50) CHARACTER SET OCTETS),
+    C.PADRAO
+FROM PRODUTO_CODBARRA C
+JOIN PRODUTO P ON (P.CDPRODUTO = C.CDPRODUTO)
+WHERE P.PRODUTO NOT LIKE 'FRETE%';
+
+/* NCM (PRODUTO.CLASSFISCAL): 1 linha por produto, base completa. CLASSFISCAL sai nulo
+   quando nulo (o Motor distingue NULO de EM BRANCO). Ignora produtos 'FRETE%'. */
+CREATE OR ALTER VIEW GABARITO_AUD_NCM (
+    CDPRODUTO,
+    PRODUTO,
+    INATIVO,
+    CLASSFISCAL,
+    CDUNIDVENDA,
+    IDIMPOSTO_VENDA
+) AS
+SELECT
+    CAST(P.CDPRODUTO   AS VARCHAR(20) CHARACTER SET OCTETS),
+    CAST(P.PRODUTO     AS VARCHAR(70) CHARACTER SET OCTETS),
+    P.INATIVO,
+    CAST(P.CLASSFISCAL AS VARCHAR(30) CHARACTER SET OCTETS),
+    CAST(P.CDUNIDVENDA AS VARCHAR(3)  CHARACTER SET OCTETS),
+    P.IDIMPOSTO_VENDA
+FROM PRODUTO P
+WHERE P.PRODUTO NOT LIKE 'FRETE%';
+
+/* Custo x preco: 1 linha por PRODUTOPRECO (CDPRODUTO + IDPRECO + CDUNIDADE) com problema.
+   SITUACAO (primeira que se aplica): 1 custo e preco zerados, 2 custo zerado,
+   3 preco zerado, 4 custo maior que preco, 5 custo igual ao preco.
+   PERC_PREJUIZO so quando custo e preco > 0. Nao filtra produto inativo. */
+CREATE OR ALTER VIEW GABARITO_AUD_CUSTO_PRECO (
+    CDPRODUTO,
+    PRODUTO,
+    INATIVO,
+    IDPRECO,
+    TABELA_PRECO,
+    CDUNIDADE,
+    VLCUSTO,
+    PRECO,
+    VLCUSTOMEDIO,
+    DIFERENCA,
+    PERC_PREJUIZO,
+    SITUACAO,
+    DTREAJUSTE,
+    DTALTER
+) AS
+SELECT
+    CAST(PP.CDPRODUTO AS VARCHAR(20) CHARACTER SET OCTETS),
+    CAST(P.PRODUTO    AS VARCHAR(70) CHARACTER SET OCTETS),
+    P.INATIVO,
+    PP.IDPRECO,
+    CAST(TP.DESCRICAO AS VARCHAR(50) CHARACTER SET OCTETS),
+    CAST(PP.CDUNIDADE AS VARCHAR(3)  CHARACTER SET OCTETS),
+    PP.VLCUSTO,
+    PP.PRECO,
+    P.VLCUSTOMEDIO,
+    COALESCE(PP.VLCUSTO, 0) - COALESCE(PP.PRECO, 0),
+    CASE
+        WHEN COALESCE(PP.VLCUSTO, 0) > 0 AND COALESCE(PP.PRECO, 0) > 0
+            THEN ROUND(((PP.VLCUSTO - PP.PRECO) / PP.VLCUSTO) * 100, 2)
+        ELSE NULL
+    END,
+    CAST(CASE
+        WHEN COALESCE(PP.VLCUSTO, 0) = 0 AND COALESCE(PP.PRECO, 0) = 0 THEN 1
+        WHEN COALESCE(PP.VLCUSTO, 0) = 0 THEN 2
+        WHEN COALESCE(PP.PRECO, 0) = 0 THEN 3
+        WHEN PP.VLCUSTO > PP.PRECO THEN 4
+        ELSE 5
+    END AS SMALLINT),
+    PP.DTREAJUSTE,
+    PP.DTALTER
+FROM PRODUTOPRECO PP
+JOIN PRODUTO P ON (P.CDPRODUTO = PP.CDPRODUTO)
+LEFT JOIN TABELAPRECO TP ON (TP.IDPRECO = PP.IDPRECO)
+WHERE COALESCE(PP.VLCUSTO, 0) = 0
+   OR COALESCE(PP.PRECO, 0) = 0
+   OR PP.VLCUSTO >= PP.PRECO;
+
+/* Sem imposto de venda: 1 linha por produto. SITUACAO: 1 IDIMPOSTO_VENDA nulo,
+   2 IDIMPOSTO_VENDA aponta para IDIMPOSTO que nao existe. Ignora produtos 'FRETE%'. */
+CREATE OR ALTER VIEW GABARITO_AUD_SEM_IMPOSTO_VENDA (
+    CDPRODUTO,
+    PRODUTO,
+    INATIVO,
+    CLASSFISCAL,
+    CDUNIDVENDA,
+    IDIMPOSTO_VENDA,
+    SITUACAO
+) AS
+SELECT
+    CAST(P.CDPRODUTO   AS VARCHAR(20) CHARACTER SET OCTETS),
+    CAST(P.PRODUTO     AS VARCHAR(70) CHARACTER SET OCTETS),
+    P.INATIVO,
+    CAST(P.CLASSFISCAL AS VARCHAR(30) CHARACTER SET OCTETS),
+    CAST(P.CDUNIDVENDA AS VARCHAR(3)  CHARACTER SET OCTETS),
+    P.IDIMPOSTO_VENDA,
+    CAST(IIF(P.IDIMPOSTO_VENDA IS NULL, 1, 2) AS SMALLINT)
+FROM PRODUTO P
+LEFT JOIN IMPOSTO I ON (I.IDIMPOSTO = P.IDIMPOSTO_VENDA)
+WHERE P.PRODUTO NOT LIKE 'FRETE%'
+  AND (P.IDIMPOSTO_VENDA IS NULL OR I.IDIMPOSTO IS NULL);

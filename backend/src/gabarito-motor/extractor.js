@@ -1040,6 +1040,287 @@ async function extrairFaturamentoMunicipio(idEmpresa, desde) {
   return { rows: agregadas, completo: true };
 }
 
+// ── Auditoria de cadastro de produtos (snapshot, sem janela) ──────────────────
+//
+// Quatro recursos independentes (auditoriaCodigoBarras, auditoriaNcm,
+// auditoriaCustoPreco, auditoriaSemImpostoVenda), todos snapshot completo por CNPJ
+// e ligados pelo toggle `auditoriaProdutosEnabled` da API. Só as linhas COM
+// problema vão no payload; `situacao` é o código numérico e `situacaoNome` o nome
+// (sem acento, de propósito). A ordem dos códigos é a prioridade da regra: vale a
+// primeira que se aplica.
+//
+// Código de barras e NCM: a view entrega a base crua e a classificação é feita
+// aqui, sobre texto já decodificado em WIN1252 — função de texto sobre coluna NONE
+// dá "Malformed string" no driver, e o REPETIDO exige cruzar todos os códigos
+// (JOIN por código dentro do SQL é quadrático no Firebird 2.5).
+
+const SITUACOES_CODIGO_BARRAS = {
+  1: 'COM ESPACOS',
+  2: 'CARACTERE INVALIDO',
+  3: 'TAMANHO ERRADO',
+  4: 'REPETIDO'
+};
+const SITUACOES_NCM = {
+  1: 'NCM NULO',
+  2: 'NCM EM BRANCO',
+  3: 'NCM COM ESPACOS',
+  4: 'NCM 99999999',
+  5: 'NCM ZERADO',
+  6: 'NCM COM CARACTERE NAO NUMERICO',
+  7: 'NCM COM MAIS DE 8 DIGITOS',
+  8: 'NCM COM MENOS DE 8 DIGITOS'
+};
+const SITUACOES_CUSTO_PRECO = {
+  1: 'CUSTO E PRECO ZERADOS',
+  2: 'CUSTO ZERADO',
+  3: 'PRECO ZERADO',
+  4: 'CUSTO MAIOR QUE PRECO',
+  5: 'CUSTO IGUAL AO PRECO'
+};
+const SITUACOES_SEM_IMPOSTO_VENDA = {
+  1: 'SEM IMPOSTO DE VENDA',
+  2: 'IMPOSTO DE VENDA INEXISTENTE'
+};
+
+// Tamanhos válidos de código de barras: EAN-8, UPC-A, EAN-13 e GTIN-14.
+const TAMANHOS_CODIGO_BARRAS = [8, 12, 13, 14];
+
+/** Texto cru (sem trim), `null` quando a coluna é nula — o NCM distingue NULO de EM BRANCO. */
+function readTextRaw(row, campo) {
+  const v = row[campo] ?? row[campo.toLowerCase()] ?? null;
+  return v === null ? null : fixEncoding(v);
+}
+
+/** Só espaços nas pontas (o TRIM do Firebird), não tab/quebra de linha. */
+function trimEspacos(s) {
+  return s.replace(/^ +| +$/g, '');
+}
+
+/** INATIVO do ERP: 0 = ativo, -1 = inativo. Nulo não conta como ativo. */
+function isInativo(row) {
+  return Number(row.INATIVO ?? row.inativo) !== 0;
+}
+
+/**
+ * Situação de UM código de barras pelas regras locais (que só olham o próprio
+ * código). REPETIDO (4) depende do conjunto de produtos e é marcado em
+ * auditarCodigosBarras.
+ * Em branco/nulo e o texto 'SEM GTIN' (padrão da NF-e) não são problema.
+ * @param {string|null} codigo  texto cru, sem trim
+ * @returns {number|null}  1 espaço, 2 caractere inválido, 3 tamanho errado, null = ok
+ */
+function classificarCodigoBarras(codigo) {
+  const c = codigo ?? '';
+  const t = trimEspacos(c);
+  if (t === '' || t.toUpperCase() === 'SEM GTIN') return null;
+  if (c.includes(' ')) return 1;
+  if (!/^[0-9]+$/.test(c)) return 2;
+  if (!TAMANHOS_CODIGO_BARRAS.includes(c.length)) return 3;
+  return null;
+}
+
+/**
+ * Situação de um NCM (PRODUTO.CLASSFISCAL). Válido = exatamente 8 dígitos, sem
+ * espaços, diferente de 99999999 e 00000000.
+ * @param {string|null} ncm  texto cru, sem trim
+ * @returns {number|null}  1..8 (ver SITUACOES_NCM), null = válido
+ */
+function classificarNcm(ncm) {
+  if (ncm === null) return 1;
+  if (trimEspacos(ncm) === '') return 2;
+  if (ncm.includes(' ')) return 3;
+  if (ncm === '99999999') return 4;
+  if (/^0+$/.test(ncm)) return 5;
+  if (!/^[0-9]+$/.test(ncm)) return 6;
+  if (ncm.length > 8) return 7;
+  if (ncm.length < 8) return 8;
+  return null;
+}
+
+/**
+ * NCM de 8 dígitos obtido tirando ponto, traço e espaço. `null` quando não há como
+ * sugerir (sobra algo que não é NCM válido). É sugestão: conferir antes de aplicar.
+ * @param {string|null} ncm
+ * @returns {string|null}
+ */
+function sugerirNcm(ncm) {
+  if (ncm === null) return null;
+  const limpo = trimEspacos(ncm).replace(/[.\- ]/g, '');
+  return /^[0-9]{8}$/.test(limpo) && limpo !== '99999999' && limpo !== '00000000' ? limpo : null;
+}
+
+/**
+ * Códigos de barras com problema, a partir das linhas da GABARITO_AUD_CODIGO_BARRAS
+ * (1 por PRODUTO_CODBARRA). Função pura.
+ *
+ * REPETIDO: o próprio produto está ativo e o mesmo código (sem espaços nas pontas)
+ * aparece em outro produto ATIVO. O mesmo código em várias unidades do MESMO
+ * produto não é repetição. `qtdMesmoCodigo` = produtos ativos com o código.
+ *
+ * @param {object[]} rows  linhas cruas do driver
+ * @returns {object[]}
+ */
+function auditarCodigosBarras(rows) {
+  const lidas = rows.map((row) => ({
+    cdProduto: readText(row, 'CDPRODUTO'),
+    produto:   readText(row, 'PRODUTO'),
+    inativo:   isInativo(row),
+    cdUnidade: readText(row, 'CDUNIDADE'),
+    codBarra:  readTextRaw(row, 'CODBARRA') ?? '',
+    padrao:    Number(row.PADRAO ?? row.padrao) === -1
+  }));
+
+  // Produtos ATIVOS dono de cada código (chave = código sem espaços nas pontas).
+  const donos = new Map();
+  for (const l of lidas) {
+    const chave = trimEspacos(l.codBarra);
+    if (l.inativo || chave === '' || chave.toUpperCase() === 'SEM GTIN') continue;
+    if (!donos.has(chave)) donos.set(chave, new Set());
+    donos.get(chave).add(l.cdProduto);
+  }
+
+  const problemas = [];
+  for (const l of lidas) {
+    const chave = trimEspacos(l.codBarra);
+    const qtd = donos.get(chave)?.size ?? null;
+    let situacao = classificarCodigoBarras(l.codBarra);
+    if (situacao === null && !l.inativo && qtd > 1) situacao = 4;
+    if (situacao === null) continue;
+    problemas.push({
+      // Todas as colunas da PK de PRODUTO_CODBARRA, com o código cru: único por CNPJ.
+      srcKey:               `${l.cdProduto}-${l.cdUnidade}-${l.codBarra}`,
+      cdProduto:            l.cdProduto,
+      produto:              l.produto,
+      inativo:              l.inativo,
+      cdUnidade:            l.cdUnidade,
+      codigoBarra:          l.codBarra,
+      tamanho:              l.codBarra.length,
+      padrao:               l.padrao,
+      // Código de barras = o próprio código do produto (código interno, não é GTIN).
+      codigoIgualCdProduto: chave === l.cdProduto,
+      qtdMesmoCodigo:       qtd,
+      situacao,
+      situacaoNome:         SITUACOES_CODIGO_BARRAS[situacao]
+    });
+  }
+  return problemas;
+}
+
+/**
+ * NCMs inválidos, a partir das linhas da GABARITO_AUD_NCM (1 por produto). Função pura.
+ * @param {object[]} rows  linhas cruas do driver
+ * @returns {object[]}
+ */
+function auditarNcm(rows) {
+  const problemas = [];
+  for (const row of rows) {
+    const ncm = readTextRaw(row, 'CLASSFISCAL');
+    const situacao = classificarNcm(ncm);
+    if (situacao === null) continue;
+    const cdProduto = readText(row, 'CDPRODUTO');
+    problemas.push({
+      srcKey:          cdProduto,
+      cdProduto,
+      produto:         readText(row, 'PRODUTO'),
+      inativo:         isInativo(row),
+      ncm,
+      tamanho:         ncm === null ? null : ncm.length,
+      cdUnidVenda:     readTextOrNull(row, 'CDUNIDVENDA'),
+      idImpostoVenda:  readNumberOrNull(row, 'IDIMPOSTO_VENDA'),
+      ncmSugerido:     sugerirNcm(ncm),
+      situacao,
+      situacaoNome:    SITUACOES_NCM[situacao]
+    });
+  }
+  return problemas;
+}
+
+/**
+ * Mapeia uma linha da GABARITO_AUD_CUSTO_PRECO (já filtrada e com SITUACAO em SQL).
+ * @param {object} row  linha crua do driver
+ * @returns {object}
+ */
+function mapAuditoriaCustoPrecoRow(row) {
+  const cdProduto = readText(row, 'CDPRODUTO');
+  const idPreco   = readNumberOrNull(row, 'IDPRECO');
+  const cdUnidade = readText(row, 'CDUNIDADE');
+  const situacao  = toNumber(row.SITUACAO ?? row.situacao);
+  return {
+    // PK de PRODUTOPRECO.
+    srcKey:        `${cdProduto}-${idPreco ?? 0}-${cdUnidade}`,
+    cdProduto,
+    produto:       readText(row, 'PRODUTO'),
+    inativo:       isInativo(row),
+    idPreco,
+    tabelaPreco:   readTextOrNull(row, 'TABELA_PRECO'),
+    cdUnidade,
+    vlCusto:       toNumber(row.VLCUSTO ?? row.vlcusto),
+    preco:         toNumber(row.PRECO ?? row.preco),
+    vlCustoMedio:  readNumberOrNull(row, 'VLCUSTOMEDIO'),
+    diferenca:     toNumber(row.DIFERENCA ?? row.diferenca),
+    percPrejuizo:  readNumberOrNull(row, 'PERC_PREJUIZO'),
+    situacao,
+    situacaoNome:  SITUACOES_CUSTO_PRECO[situacao] ?? null,
+    dtReajuste:    readDateOnly(row, 'DTREAJUSTE'),
+    dtAlter:       readDateOnly(row, 'DTALTER')
+  };
+}
+
+/**
+ * Mapeia uma linha da GABARITO_AUD_SEM_IMPOSTO_VENDA (já filtrada e com SITUACAO em SQL).
+ * @param {object} row  linha crua do driver
+ * @returns {object}
+ */
+function mapAuditoriaSemImpostoVendaRow(row) {
+  const cdProduto = readText(row, 'CDPRODUTO');
+  const situacao  = toNumber(row.SITUACAO ?? row.situacao);
+  return {
+    srcKey:         cdProduto,
+    cdProduto,
+    produto:        readText(row, 'PRODUTO'),
+    inativo:        isInativo(row),
+    classFiscal:    readTextOrNull(row, 'CLASSFISCAL'),
+    cdUnidVenda:    readTextOrNull(row, 'CDUNIDVENDA'),
+    idImpostoVenda: readNumberOrNull(row, 'IDIMPOSTO_VENDA'),
+    situacao,
+    situacaoNome:   SITUACOES_SEM_IMPOSTO_VENDA[situacao] ?? null
+  };
+}
+
+/**
+ * Lê uma view da auditoria e transforma as linhas em payload. `completo: false` se
+ * a leitura falhar — aí o recurso é omitido do envio e a API preserva o que tinha
+ * (um [] de extração falha NÃO pode esvaziar o snapshot dela).
+ * @param {string}   recurso   nome do recurso (para o log)
+ * @param {string}   view      view do Firebird
+ * @param {Function} transformar  (rowsCrus) => linhas do payload
+ * @returns {Promise<{rows: Array, completo: boolean}>}
+ */
+async function extrairAuditoria(recurso, view, transformar) {
+  let cruas;
+  try {
+    cruas = await query(`SELECT * FROM ${view}`, []);
+  } catch (err) {
+    logError(`[Gabarito] Erro ao consultar ${view} (${recurso}):`, err);
+    return { rows: [], completo: false };
+  }
+  const rows = transformar(cruas || []);
+  const chaves = new Set(rows.map(r => r.srcKey));
+  if (chaves.size !== rows.length) {
+    logWarn(`[Gabarito] ${recurso}: ${rows.length} linhas com apenas ${chaves.size} chaves srcKey únicas (colisão de chave!). Verifique a composição da chave.`);
+  }
+  return { rows, completo: true };
+}
+
+const extrairAuditoriaCodigoBarras = () =>
+  extrairAuditoria('auditoriaCodigoBarras', 'GABARITO_AUD_CODIGO_BARRAS', auditarCodigosBarras);
+const extrairAuditoriaNcm = () =>
+  extrairAuditoria('auditoriaNcm', 'GABARITO_AUD_NCM', auditarNcm);
+const extrairAuditoriaCustoPreco = () =>
+  extrairAuditoria('auditoriaCustoPreco', 'GABARITO_AUD_CUSTO_PRECO', (rows) => rows.map(mapAuditoriaCustoPrecoRow));
+const extrairAuditoriaSemImpostoVenda = () =>
+  extrairAuditoria('auditoriaSemImpostoVenda', 'GABARITO_AUD_SEM_IMPOSTO_VENDA', (rows) => rows.map(mapAuditoriaSemImpostoVendaRow));
+
 // ── Streaming Curva ABC (Full Sync) ───────────────────────────────────────────
 
 /**
@@ -1225,5 +1506,16 @@ module.exports = {
   extrairFaturamentoMunicipio,
   mapFaturamentoMunicipioRow,
   agregarFaturamentoMunicipio,
-  inicioDoMes
+  inicioDoMes,
+  extrairAuditoriaCodigoBarras,
+  extrairAuditoriaNcm,
+  extrairAuditoriaCustoPreco,
+  extrairAuditoriaSemImpostoVenda,
+  classificarCodigoBarras,
+  classificarNcm,
+  sugerirNcm,
+  auditarCodigosBarras,
+  auditarNcm,
+  mapAuditoriaCustoPrecoRow,
+  mapAuditoriaSemImpostoVendaRow
 };
